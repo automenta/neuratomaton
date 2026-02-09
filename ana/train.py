@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from .models import ANAModel
-from .data import AssociativeRecallDataset
+from .data import AssociativeRecallDataset, TextDataset
+from .config import ANAConfig, TrainingConfig, DataConfig
 import matplotlib.pyplot as plt
 import os
 import json
@@ -85,13 +86,16 @@ def evaluate(model, dataloader, criterion, device):
             
             # Aggregate stats
             for info in info_log:
-                stats['ga_A'].append(info['ga_A'])
-                stats['ga_B'].append(info['ga_B'])
-                stats['ret_gate'].append(info['ret_gate'])
+                if 'ga_A' in info: stats['ga_A'].append(info['ga_A'])
+                if 'ga_B' in info: stats['ga_B'].append(info['ga_B'])
+                if 'ret_gate' in info: stats['ret_gate'].append(info['ret_gate'])
                 
     # Mean stats
     avg_stats = {k: np.mean(v) if v else 0.0 for k, v in stats.items()}
-    acc = total_correct / total_samples
+    if total_samples > 0:
+        acc = total_correct / total_samples
+    else:
+        acc = 0.0
     return total_loss / len(dataloader), avg_stats, acc
 
 def col_fn(batch):
@@ -126,178 +130,92 @@ def col_fn(batch):
     else:
         return torch.stack(xs), torch.stack(ys)
 
-def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_config: DataConfig):
+    device = torch.device(train_config.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Hyperparams
-    VOCAB_SIZE = 40
-    D_MODEL = 64
-    STATE_DIM = 64
-    NUM_LAYERS = 2
-    BATCH_SIZE = 16
-    EPOCHS = 6 # Stage 2A
-    
     # Dataset
-    # Noise range 20 to 50
-    dataset = AssociativeRecallDataset(size=2000, vocab_size=VOCAB_SIZE, min_noise=20, max_noise=50)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=col_fn)
+    if train_config.stage in ['2a', '3a']:
+        dataset = AssociativeRecallDataset(
+            size=data_config.dataset_size,
+            vocab_size=data_config.vocab_size,
+            min_noise=data_config.min_noise,
+            max_noise=data_config.max_noise
+        )
+        dataloader = DataLoader(dataset, batch_size=train_config.batch_size, shuffle=True, collate_fn=col_fn)
+        # Update model vocab size to match dataset
+        ana_config.vocab_size = data_config.vocab_size
+    elif train_config.stage == '2b':
+         # Concatenate some files if corpus not present
+        if not os.path.exists('data/corpus.txt'):
+             if not os.path.exists('data'): os.makedirs('data')
+             os.system("cat ana/*.py README.md > data/corpus.txt")
+
+        dataset_path = data_config.dataset_path if data_config.dataset_path else 'data/corpus.txt'
+        dataset = TextDataset(dataset_path, seq_len=data_config.seq_len)
+        dataloader = DataLoader(dataset, batch_size=train_config.batch_size, shuffle=True)
+        # Update model vocab size for text
+        ana_config.vocab_size = 256
+
+    model = ANAModel(ana_config).to(device)
     
-    # Model: Single Phase 2 ANA
-    model = ANAModel(VOCAB_SIZE, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
+    # Load weights if needed (e.g. for 2b or 3a continuation)
+    # Simple logic: if model file exists from previous stage, try load?
+    # Keeping simple for now.
+
+    criterion = nn.CrossEntropyLoss(ignore_index=0, reduction='none')
+    optimizer = optim.AdamW(model.parameters(), lr=train_config.learning_rate)
     
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+    print(f"Starting Stage {train_config.stage} Training...")
+    history = {'loss': [], 'ga_A': [], 'ga_B': [], 'ret': [], 'force_prob': []}
     
-    print("Starting Stage 2A: Associative Recall Training...")
-    
-    history = {'loss': [], 'ga_A': [], 'ga_B': [], 'ret': []}
-    
-    for epoch in range(EPOCHS):
-        val_loss, stats = evaluate(model, dataloader, criterion, device) # Pre-eval
-        print(f"Epoch {epoch} (Pre) | Loss: {val_loss:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
+    for epoch in range(train_config.epochs):
+        force_prob = 0.0
+        if train_config.stage == '3a':
+             # Curriculum logic
+            if epoch < 3:
+                force_prob = 1.0
+            elif epoch < 6:
+                force_prob = 1.0 - ((epoch - 2) / 3.0)
+            else:
+                force_prob = 0.0
         
-        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
-        val_loss, stats = evaluate(model, dataloader, criterion, device)
+        # Train
+        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device, force_prob=force_prob)
         
-        print(f"Epoch {epoch+1} | Loss: {val_loss:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
+        # Eval
+        val_loss, stats, acc = evaluate(model, dataloader, criterion, device)
+
+        print(f"Epoch {epoch+1} | Force: {force_prob:.2f} | Loss: {val_loss:.4f} | Acc: {acc:.4f} | Gates: A={stats['ga_A']:.2f}, Ret={stats['ret_gate']:.2f}")
         
         history['loss'].append(val_loss)
+        history['force_prob'].append(force_prob)
         history['ga_A'].append(stats['ga_A'])
         history['ga_B'].append(stats['ga_B'])
         history['ret'].append(stats['ret_gate'])
         
     # Save
-    with open('archive/results/results_phase2a.json', 'w') as f:
-        json.dump(history, f, indent=2)
+    if not os.path.exists(train_config.output_dir):
+        os.makedirs(train_config.output_dir)
         
-    # Save Model Weights
-    torch.save(model.state_dict(), 'archive/results/model_stage2a.pt')
-        
-    print("Stage 2A Complete.")
-    
-def train_stage_2b():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Hyperparams
-    VOCAB_SIZE_TXT = 256 # Char level
-    D_MODEL = 64
-    STATE_DIM = 64
-    NUM_LAYERS = 2
-    BATCH_SIZE = 32
-    EPOCHS = 4 # Warmup
-    
-    # Dataset (Use local files as fallback)
-    # Concatenate some files
-    os.system("cat ana/*.py README.md > data/corpus.txt")
-    dataset = TextDataset('data/corpus.txt', seq_len=64)
-    if len(dataset) == 0:
-        print("Error: Corpus empty.")
-        return
-        
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-    
-    # Model: New vocab size
-    model = ANAModel(VOCAB_SIZE_TXT, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
-    
-    # Load Weights from Stage 2A (Partial)
-    if os.path.exists('model_stage2a.pt'):
-        print("Loading Stage 2A weights (Filtering embedding/head)...")
-        state_dict = torch.load('model_stage2a.pt')
-        model_dict = model.state_dict()
-        
-        # Filter out mismatching keys
-        pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict and v.size() == model_dict[k].size()}
-        
-        model_dict.update(pretrained_dict)
-        model.load_state_dict(model_dict)
-    else:
-        print("Warning: Stage 2A weights not found. Starting fresh.")
-        
-    # Freeze HoloLink? "Train only Tracks and Controller"
-    # To freeze HoloLink:
-    for layer in model.layers:
-        for param in layer['holo'].parameters():
-            param.requires_grad = False
-            
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
-    
-    print("Starting Stage 2B: Text Warmup (Holo Frozen)...")
-    history = {'loss': []}
-    
-    for epoch in range(EPOCHS):
-        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
-        print(f"Epoch {epoch+1} | Loss: {train_loss:.4f}")
-        history['loss'].append(train_loss)
-        
-    with open('results_phase2b.json', 'w') as f:
+    with open(f'{train_config.output_dir}/results_stage{train_config.stage}.json', 'w') as f:
         json.dump(history, f, indent=2)
 
-def train_stage_3a():
-    """
-    Stage 3A: Associative Recall with Forced Curriculum
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Hyperparams
-    VOCAB_SIZE = 40
-    D_MODEL = 64
-    STATE_DIM = 64
-    NUM_LAYERS = 2
-    BATCH_SIZE = 16
-    EPOCHS = 10 # More epochs to allow annealing
-    
-    # Dataset
-    # DEBUG: Short noise to verify mechanism
-    dataset = AssociativeRecallDataset(size=2000, vocab_size=VOCAB_SIZE, min_noise=1, max_noise=5)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=col_fn)
-    
-    # Model
-    model = ANAModel(VOCAB_SIZE, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
-    
-    criterion = nn.CrossEntropyLoss(ignore_index=0, reduction='none')
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
-    
-    print("Starting Stage 3A: Forced Holo-Link Curriculum...")
-    history = {'loss': [], 'force_prob': []}
-    
-    for epoch in range(EPOCHS):
-        # Curriculum:
-        # Epoch 0-2: Force 100%
-        # Epoch 3-5: Anneal 1.0 -> 0.0
-        # Epoch 6+: 0%
-        if epoch < 3:
-            force_prob = 1.0
-        elif epoch < 6:
-            force_prob = 1.0 - ((epoch - 2) / 3.0) # 0.66, 0.33, 0.0
-        else:
-            force_prob = 0.0
-            
-        # Training
-        avg_loss = train_one_epoch(model, dataloader, optimizer, criterion, device, force_prob=force_prob)
-        
-        # Eval (without forcing to see if it learned)
-        val_loss, stats, acc = evaluate(model, dataloader, criterion, device)
-        
-        print(f"Epoch {epoch+1} | Force: {force_prob:.2f} | Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | Acc: {acc:.4f} | Gates: A={stats['ga_A']:.2f}, Ret={stats['ret_gate']:.2f}")
-        
-        history['loss'].append(val_loss)
-        history['force_prob'].append(force_prob)
+    torch.save(model.state_dict(), f'{train_config.output_dir}/model_stage{train_config.stage}.pt')
+    print(f"Stage {train_config.stage} Complete.")
 
-    with open('results_phase3a.json', 'w') as f:
-        json.dump(history, f, indent=2)
-
-if __name__ == '__main__':
-    # Toggle stages
+def main():
+    # Example Usage
+    ana_config = ANAConfig()
+    train_config = TrainingConfig()
+    data_config = DataConfig()
+    
+    # Simple CLI dispatch
     import sys
     if len(sys.argv) > 1:
-        if sys.argv[1] == '2b':
-            from data import TextDataset
-            train_stage_2b()
-        elif sys.argv[1] == '3a':
-            train_stage_3a()
-    else:
-        main()
+        train_config.stage = sys.argv[1]
+    
+    run_training(ana_config, train_config, data_config)
+
+if __name__ == '__main__':
+    main()
