@@ -2,7 +2,7 @@
 import unittest
 import torch
 import torch.nn as nn
-from ana.models import LinearRecurrentUnit, ANAConfig, ANAModel
+from ana.models import ANAModel, LinearRecurrentUnit, ANAConfig
 
 class TestParallelScan(unittest.TestCase):
     def setUp(self):
@@ -14,51 +14,51 @@ class TestParallelScan(unittest.TestCase):
             batch_size=2,
             key_dim=4,
             use_hololink=True,
-            use_controller=True
+            use_controller=True,
+            track_count=2
         )
         self.lru = LinearRecurrentUnit(self.config)
 
     def test_lru_equivalence(self):
         x = torch.randn(self.config.batch_size, 10, self.config.d_model) # 10 steps
 
-        # Run sequential
-        h_prev = None
-        outputs_seq = []
+        # Method 1: JIT Scan (forward_sequence with use_parallel_scan=False)
+        self.config.use_parallel_scan = False
+        # self.lru.config is a reference to self.config?
+        # Let's assume it is. If not, manual set.
+        self.lru.config.use_parallel_scan = False
+        y_jit, h_jit = self.lru.forward_sequence(x)
 
-        # We need to make sure static params are used identically.
-        # forward() uses static params if dynamic_gates is None.
-
-        for t in range(x.size(1)):
-            xt = x[:, t, :]
-            yt, h_prev, _ = self.lru(xt, h_prev)
-            outputs_seq.append(yt)
-
-        y_seq = torch.stack(outputs_seq, dim=1)
-
-        # Run parallel
-        y_par, h_par = self.lru.forward_sequence(x)
+        # Method 2: Log Scan (forward_sequence with use_parallel_scan=True)
+        self.config.use_parallel_scan = True
+        self.lru.config.use_parallel_scan = True
+        y_log, h_log = self.lru.forward_sequence(x)
 
         # Compare
-        diff = torch.abs(y_seq - y_par).max()
-        print(f"LRU Max Diff: {diff.item()}")
+        diff = torch.abs(y_jit - y_log).max()
+        print(f"LRU Max Diff (JIT vs Log): {diff.item()}")
         self.assertLess(diff.item(), 1e-5)
 
     def test_anamodel_equivalence(self):
         model = ANAModel(self.config)
-        model.eval() # Ensure dropout (if any) is off, though we have none.
+        model.eval()
 
         input_ids = torch.randint(0, self.config.vocab_size, (self.config.batch_size, 10))
 
-        # Sequential
+        # Sequential (Python Loop + Single Step)
         self.config.use_parallel_scan = False
+        model.config.use_parallel_scan = False
+
         logits_seq, _ = model(input_ids)
 
-        # Parallel
+        # Parallel (Log Scan)
         self.config.use_parallel_scan = True
+        model.config.use_parallel_scan = True
+
         logits_par, _ = model(input_ids)
 
         diff = torch.abs(logits_seq - logits_par).max()
-        print(f"Model Max Diff: {diff.item()}")
+        print(f"Model Max Diff (Seq vs LogPar): {diff.item()}")
         self.assertLess(diff.item(), 1e-5)
 
 if __name__ == '__main__':

@@ -13,7 +13,10 @@ def main():
     # Ablations
     parser.add_argument("--no-hololink", action="store_true", help="Disable HoloLink")
     parser.add_argument("--no-controller", action="store_true", help="Disable Controller")
-    parser.add_argument("--parallel", action="store_true", help="Use Parallel Scan (Fast)")
+    parser.add_argument("--parallel", action="store_true", help="Use Parallel Scan (Fast Log-N)")
+
+    # Architecture
+    parser.add_argument("--track-count", type=int, default=2, help="Number of parallel tracks")
 
     args = parser.parse_args()
 
@@ -31,6 +34,9 @@ def main():
 
     if args.parallel:
         config.use_parallel_scan = True
+
+    if args.track_count:
+        config.track_count = args.track_count
 
     # Set device
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
