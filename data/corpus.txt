@@ -1,0 +1,937 @@
+
+import torch
+from torch.utils.data import Dataset
+import random
+import string
+
+class AssociativeRecallDataset(Dataset):
+    """
+    Generates 'Needle-in-a-Haystack' sequences.
+    Structure:
+    [KEY_MARK] [KEY_VAL] [VAL_MARK] [VAL_VAL] ... [NOISE] ... [QUERY_MARK] [KEY_VAL] [TARGET] [VAL_VAL]
+    
+    Vocabulary:
+    0: PAD
+    1: KEY_MARK
+    2: VAL_MARK
+    3: QUERY_MARK
+    4: END_MARK (Target is next)
+    5-25: Digits/Chars (Content)
+    
+    Task:
+    Given: KEY A VAL B ... [Noise] ... QUERY A
+    Predict: B
+    """
+    def __init__(self, size=1000, vocab_size=30, min_noise=10, max_noise=50):
+        self.size = size
+        self.vocab_size = vocab_size
+        self.min_noise = min_noise
+        self.max_noise = max_noise
+        
+        self.TOK_KEY = 1
+        self.TOK_VAL = 2
+        self.TOK_QUERY = 3
+        self.TOK_TARGET = 4 # Might not be explicit in input, but useful concept
+        
+        self.content_tokens = list(range(5, vocab_size))
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        # 1. Select Key and Value
+        key_token = random.choice(self.content_tokens)
+        val_token = random.choice(self.content_tokens)
+        
+        # 2. Key-Value Pair Definition
+        # [KEY] [K] [VAL] [V]
+        kv_pair = [self.TOK_KEY, key_token, self.TOK_VAL, val_token]
+        
+        # 3. Noise
+        noise_len = random.randint(self.min_noise, self.max_noise)
+        noise = [random.choice(self.content_tokens) for _ in range(noise_len)]
+        
+        # 4. Query
+        # [QUERY] [K]
+        query = [self.TOK_QUERY, key_token]
+        
+        # Full Sequence
+        # Input: KV_PAIR + NOISE + QUERY
+        # Target: Shifted by 1. Last token of Target should be VAL_TOKEN.
+        
+        # We want to train it as causal LM.
+        # Context: ... [QUERY] [K] -> Predict [V]
+        
+        input_seq = kv_pair + noise + query
+        target_seq = kv_pair[1:] + noise + query + [val_token]
+        
+        # Truncate if needed (not expected with these params)
+        # Pad? Not needed if batch_size=1 or collate handles it.
+        # But standard DataLoader requires equal length tensors if not using custom collate.
+        # We fixed noise for now or padding?
+        # Let's simple fix max length.
+        
+        # Only training on the final prediction matters most, but Causal LM trains on all.
+        # The loss on noise is irrelevant/easy. The loss on V is critical.
+        
+        x = torch.tensor(input_seq, dtype=torch.long)
+        y = torch.tensor(target_seq[len(input_seq)-len(query)-len(noise)-len(kv_pair):], dtype=torch.long) # Wrong logic
+        
+        # Correct Causal LM:
+        # Input:  [A, B, C]
+        # Target: [B, C, D]
+        
+        full_seq = kv_pair + noise + query + [val_token]
+        x = torch.tensor(full_seq[:-1], dtype=torch.long)
+        y = torch.tensor(full_seq[1:], dtype=torch.long)
+        
+        # Masking? We can iterate loss over everything.
+        # The model should learn the KV association.
+        
+        return x, y
+
+class TextDataset(Dataset):
+    """
+    Character-level text dataset for Stage 2B Warmup.
+    Reads text files from a directory.
+    """
+    def __init__(self, file_path, seq_len=64):
+        self.seq_len = seq_len
+        
+        # Read file
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            self.text = f.read()
+            
+        # Vocab: ASCII 0-127 usually.
+        # Simple mapping: Ord(c) % 256
+        self.vocab_size = 256
+        self.data = [ord(c) % 256 for c in self.text]
+        
+        # Chunk into sequences
+        self.num_samples = len(self.data) // (seq_len + 1)
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        start = idx * self.seq_len
+        end = start + self.seq_len + 1
+        chunk = self.data[start:end]
+        
+        # If too short (shouldn't happen with integer division logic but strictly)
+        if len(chunk) < self.seq_len + 1:
+            chunk = chunk + [0] * (self.seq_len + 1 - len(chunk))
+            
+        x = torch.tensor(chunk[:-1], dtype=torch.long)
+        y = torch.tensor(chunk[1:], dtype=torch.long)
+        
+        return x, y
+
+import torch
+from torch.utils.data import Dataset
+import random
+import string
+
+class AssociativeRecallDataset(Dataset):
+    """
+    Generates 'Needle-in-a-Haystack' sequences.
+    Structure:
+    [KEY_MARK] [KEY_VAL] [VAL_MARK] [VAL_VAL] ... [NOISE] ... [QUERY_MARK] [KEY_VAL] [TARGET] [VAL_VAL]
+    
+    Vocabulary:
+    0: PAD
+    1: KEY_MARK
+    2: VAL_MARK
+    3: QUERY_MARK
+    4: END_MARK (Target is next)
+    5-25: Digits/Chars (Content)
+    
+    Task:
+    Given: KEY A VAL B ... [Noise] ... QUERY A
+    Predict: B
+    """
+    def __init__(self, size=1000, vocab_size=30, min_noise=10, max_noise=50):
+        self.size = size
+        self.vocab_size = vocab_size
+        self.min_noise = min_noise
+        self.max_noise = max_noise
+        
+        self.TOK_KEY = 1
+        self.TOK_VAL = 2
+        self.TOK_QUERY = 3
+        self.TOK_TARGET = 4 # Might not be explicit in input, but useful concept
+        
+        self.content_tokens = list(range(5, vocab_size))
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        # 1. Select Key and Value
+        key_token = random.choice(self.content_tokens)
+        val_token = random.choice(self.content_tokens)
+        
+        # 2. Key-Value Pair Definition
+        # [KEY] [K] [VAL] [V]
+        kv_pair = [self.TOK_KEY, key_token, self.TOK_VAL, val_token]
+        
+        # 3. Noise
+        noise_len = random.randint(self.min_noise, self.max_noise)
+        noise = [random.choice(self.content_tokens) for _ in range(noise_len)]
+        
+        # 4. Query
+        # [QUERY] [K]
+        query = [self.TOK_QUERY, key_token]
+        
+        # Full Sequence
+        # Input: KV_PAIR + NOISE + QUERY
+        # Target: Shifted by 1. Last token of Target should be VAL_TOKEN.
+        
+        # We want to train it as causal LM.
+        # Context: ... [QUERY] [K] -> Predict [V]
+        
+        input_seq = kv_pair + noise + query
+        target_seq = kv_pair[1:] + noise + query + [val_token]
+        
+        # Truncate if needed (not expected with these params)
+        # Pad? Not needed if batch_size=1 or collate handles it.
+        # But standard DataLoader requires equal length tensors if not using custom collate.
+        # We fixed noise for now or padding?
+        # Let's simple fix max length.
+        
+        # Only training on the final prediction matters most, but Causal LM trains on all.
+        # The loss on noise is irrelevant/easy. The loss on V is critical.
+        
+        x = torch.tensor(input_seq, dtype=torch.long)
+        y = torch.tensor(target_seq[len(input_seq)-len(query)-len(noise)-len(kv_pair):], dtype=torch.long) # Wrong logic
+        
+        # Correct Causal LM:
+        # Input:  [A, B, C]
+        # Target: [B, C, D]
+        
+        full_seq = kv_pair + noise + query + [val_token]
+        x = torch.tensor(full_seq[:-1], dtype=torch.long)
+        y = torch.tensor(full_seq[1:], dtype=torch.long)
+        
+        # Masking? We can iterate loss over everything.
+        # The model should learn the KV association.
+        
+        return x, y
+
+class TextDataset(Dataset):
+    """
+    Character-level text dataset for Stage 2B Warmup.
+    Reads text files from a directory.
+    """
+    def __init__(self, file_path, seq_len=64):
+        self.seq_len = seq_len
+        
+        # Read file
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            self.text = f.read()
+            
+        # Vocab: ASCII 0-127 usually.
+        # Simple mapping: Ord(c) % 256
+        self.vocab_size = 256
+        self.data = [ord(c) % 256 for c in self.text]
+        
+        # Chunk into sequences
+        self.num_samples = len(self.data) // (seq_len + 1)
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        start = idx * self.seq_len
+        end = start + self.seq_len + 1
+        chunk = self.data[start:end]
+        
+        # If too short (shouldn't happen with integer division logic but strictly)
+        if len(chunk) < self.seq_len + 1:
+            chunk = chunk + [0] * (self.seq_len + 1 - len(chunk))
+            
+        x = torch.tensor(chunk[:-1], dtype=torch.long)
+        y = torch.tensor(chunk[1:], dtype=torch.long)
+        
+        return x, y
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class LinearRecurrentUnit(nn.Module):
+    """
+    A simplified Linear Recurrent Unit (LRU) / SSM layer.
+    h_t = alpha * h_{t-1} + beta * x_t
+    y_t = h_t
+    
+    Alpha and Beta can be static (learned parameters) or dynamic (provided per step).
+    """
+    def __init__(self, d_model, state_dim):
+        super().__init__()
+        self.d_model = d_model
+        self.state_dim = state_dim
+        
+        # Projections for input x_t -> state_dim
+        self.input_proj = nn.Linear(d_model, state_dim)
+        
+        # Output projection state_dim -> d_model
+        self.output_proj = nn.Linear(state_dim, d_model)
+        
+        # Static parameters (used as baseline or base for dynamic)
+        # alpha should be in [0, 1]. initialized to preserve history (high alpha)
+        # beta should be in [0, 1]. initialized to accept some input
+        self.static_alpha_logit = nn.Parameter(torch.Tensor(state_dim).uniform_(2, 4)) # sigmoid(2) ~= 0.88, sigmoid(4) ~= 0.98
+        self.static_beta_logit = nn.Parameter(torch.Tensor(state_dim).uniform_(-2, 0)) # sigmoid(-2) ~= 0.12, sigmoid(0) = 0.5
+
+    def forward(self, x, h_prev=None, dynamic_gates=None):
+        """
+        x: [batch, d_model]
+        h_prev: [batch, state_dim]
+        dynamic_gates: tuple (gate_alpha, gate_beta) from Controller
+                       gate_alpha: [batch, state_dim]
+                       gate_beta: [batch, state_dim]
+        """
+        batch_size = x.size(0)
+        
+        if h_prev is None:
+            h_prev = torch.zeros(batch_size, self.state_dim, device=x.device)
+            
+        u_t = self.input_proj(x) # [batch, state_dim]
+        
+        # Calculate alpha and beta
+        if dynamic_gates is not None:
+            gate_alpha, gate_beta = dynamic_gates
+            # Modulation: sigmoid(static + dynamic)
+            alpha = torch.sigmoid(self.static_alpha_logit + gate_alpha)
+            beta = torch.sigmoid(self.static_beta_logit + gate_beta)
+        else:
+            alpha = torch.sigmoid(self.static_alpha_logit)
+            beta = torch.sigmoid(self.static_beta_logit)
+            
+        # Evolution: h_t = alpha * h_{t-1} + beta * u_t
+        h_t = alpha * h_prev + beta * u_t
+        
+        # Projection to output
+        y_t = self.output_proj(h_t)
+        
+        return y_t, h_t, (alpha, beta)
+
+class HyperController(nn.Module):
+    """
+    Scalar HyperController for Dual-Track ANA + HoloLink.
+    Outputs:
+    - alpha_A, beta_A (Track A - Reflex)
+    - alpha_B, beta_B (Track B - Reasoning)
+    - gamma_ret (HoloLink Retrieval Gate)
+    """
+    def __init__(self, d_model, hidden_dim=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU()
+        )
+        # 5 scalars: 2 for Track A, 2 for Track B, 1 for Retrieval
+        self.head = nn.Linear(hidden_dim, 5)
+        
+        # Init to small values to start with defaults
+        with torch.no_grad():
+            self.head.weight.fill_(0.0)
+            self.head.bias.fill_(0.0)
+
+    def forward(self, x):
+        # x: [batch, d_model]
+        features = self.net(x)
+        out = self.head(features) # [batch, 5]
+        
+        # Split
+        g_alpha_A = out[:, 0:1]
+        g_beta_A  = out[:, 1:2]
+        g_alpha_B = out[:, 2:3]
+        g_beta_B  = out[:, 3:4]
+        g_ret     = out[:, 4:5]
+        
+        return g_alpha_A, g_beta_A, g_alpha_B, g_beta_B, g_ret
+
+class HoloLink(nn.Module):
+    """
+    Associative Memory Module using Matrix Accumulation / Linear Attention.
+    M_t = M_{t-1} + K(h_t) * V(h_t)^T
+    Read = M_t * Q(x_t)
+    """
+    def __init__(self, d_model, state_dim, key_dim=32):
+        super().__init__()
+        self.key_dim = key_dim
+        self.d_model = d_model
+        
+        # Q projection from input
+        self.q_proj = nn.Linear(d_model, key_dim, bias=False)
+        
+        # K projection from state (Random, Fixed)
+        self.k_proj = nn.Linear(state_dim, key_dim, bias=False)
+        # Freeze K
+        self.k_proj.weight.requires_grad = False
+        nn.init.orthogonal_(self.k_proj.weight)
+        
+        # V projection from state (Learned)
+        self.v_proj = nn.Linear(state_dim, d_model, bias=False) # Store values to reconstruct input/embedding info?
+        # Actually value should be associated with what we want to retrieve.
+        # Usually we want to retrieve the content associated with the state.
+        # Let's project state to d_model size "value".
+        
+    def forward(self, x_t, h_t, M_prev):
+        """
+        x_t: [batch, d_model] (Query source)
+        h_t: [batch, state_dim] (Key/Value source)
+        M_prev: [batch, key_dim, d_model] (Accumulator)
+        """
+        batch_size = x_t.size(0)
+        
+        if M_prev is None:
+            M_prev = torch.zeros(batch_size, self.key_dim, self.d_model, device=x_t.device)
+            # wait, self.d_model not stored.
+            # v_proj out features
+            d_val = self.v_proj.out_features
+            M_prev = torch.zeros(batch_size, self.key_dim, d_val, device=x_t.device)
+            
+        # 1. Write: M_t = M_{t-1} + k_t * v_t^T
+        k_t = self.k_proj(h_t) # [batch, key_dim]
+        v_t = self.v_proj(h_t) # [batch, val_dim]
+        
+        # Outer product: [batch, key, 1] * [batch, 1, val] -> [batch, key, val]
+        update = torch.bmm(k_t.unsqueeze(2), v_t.unsqueeze(1))
+        M_t = M_prev + update
+        
+        # 2. Read: r_t = M_t^T * q_t  (Wait, M maps K->V. Query is in K space. So M * q ?)
+        # Dim check: M is [key, val]. q is [key]. Result [val].
+        # M_t: [batch, key, val]
+        # q_t: [batch, key]
+        q_t = self.q_proj(x_t)
+        
+        # [batch, 1, key] * [batch, key, val] -> [batch, 1, val]
+        retrieved = torch.bmm(q_t.unsqueeze(1), M_t).squeeze(1)
+        
+        return retrieved, M_t
+
+class ANAModel(nn.Module):
+    """
+    Phase 2: Dual-Track ANA + HoloLink
+    """
+    def __init__(self, vocab_size, d_model, state_dim, num_layers=2):
+        super().__init__()
+        self.d_model = d_model
+        self.state_dim = state_dim
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        
+        self.layers = nn.ModuleList()
+        for _ in range(num_layers):
+            layer_dict = nn.ModuleDict({
+                'controller': HyperController(d_model),
+                'lru_A': LinearRecurrentUnit(d_model, state_dim), # Reflex
+                'lru_B': LinearRecurrentUnit(d_model, state_dim), # Reasoning
+                'holo': HoloLink(d_model, state_dim * 2) # Inputs concatenated state
+            })
+            
+            # Initialize LRU biases
+            # Track A: Fast Decay (alpha ~ 0), High Beta.
+            # Sigmoid(x) ~ 0 -> x negative large.
+            # Sigmoid(x) ~ 1 -> x positive large.
+            
+            # Track A (Reflex):
+            with torch.no_grad():
+                layer_dict['lru_A'].static_alpha_logit.fill_(-3.0) # sig(-3) ~ 0.05
+                layer_dict['lru_A'].static_beta_logit.fill_(2.0)   # sig(2) ~ 0.88
+                
+            # Track B (Reasoning): Slow Decay
+            with torch.no_grad():
+                layer_dict['lru_B'].static_alpha_logit.fill_(3.0)  # sig(3) ~ 0.95
+                layer_dict['lru_B'].static_beta_logit.fill_(0.0)   # sig(0) = 0.5
+            
+            self.layers.append(layer_dict)
+        
+        self.norm = nn.LayerNorm(d_model)
+        self.output_head = nn.Linear(d_model, vocab_size)
+
+    def forward(self, input_ids, return_info=False):
+        x = self.embedding(input_ids)
+        batch, seq_len, _ = x.shape
+        
+        # State init
+        h_states_A = [None] * len(self.layers)
+        h_states_B = [None] * len(self.layers)
+        m_states = [None] * len(self.layers)
+        
+        final_layer_outputs = []
+        info_log = []
+        
+        for t in range(seq_len):
+            xt = x[:, t, :]
+            
+            for i, layer in enumerate(self.layers):
+                ctl = layer['controller']
+                lru_A = layer['lru_A']
+                lru_B = layer['lru_B']
+                holo = layer['holo']
+                
+                # 1. Controller
+                # alpha, beta correspond to scalar modulation
+                ga_A, gb_A, ga_B, gb_B, g_ret = ctl(xt)
+                
+                # Broadcast scalars to state_dim [batch, 1] -> [batch, state_dim]
+                # Actually, LRU expects [batch, state_dim] or broadcastable?
+                # LRU code: alpha = sigmoid(static + gate).
+                # if gate is [batch, 1], it broadcasts to [batch, state_dim]. Perfectly fine.
+                
+                # 2. Update Tracks
+                yt_A, ht_A, _ = lru_A(xt, h_states_A[i], dynamic_gates=(ga_A, gb_A))
+                yt_B, ht_B, _ = lru_B(xt, h_states_B[i], dynamic_gates=(ga_B, gb_B))
+                
+                h_states_A[i] = ht_A
+                h_states_B[i] = ht_B
+                
+                # 3. HoloLink
+                # Concatenate states for key/value generation
+                ht_combined = torch.cat([ht_A, ht_B], dim=-1)
+                qt, mt_next = holo(xt, ht_combined, m_states[i])
+                m_states[i] = mt_next
+                
+                # 4. Merge
+                # y_t = y_A + y_B + (gate_ret * retrieved)
+                # gate_ret is raw linear out, apply sigmoid
+                
+                ret_gate = torch.sigmoid(g_ret)
+                
+                layer_out = (yt_A + yt_B) / 2.0 + ret_gate * qt
+                
+                xt = xt + layer_out # Residual
+                
+                if return_info and i == 0 and t < 10:
+                   info_log.append({
+                       'ga_A': ga_A.mean().item(),
+                       'ga_B': ga_B.mean().item(),
+                       'ret_gate': ret_gate.mean().item()
+                   })
+
+            final_layer_outputs.append(xt)
+            
+        output_seq = torch.stack(final_layer_outputs, dim=1)
+        
+        # Add LayerNorm
+        output_seq = self.norm(output_seq)
+        
+        logits = self.output_head(output_seq)
+        
+        return logits, info_log
+
+class BaselineSSM(nn.Module):
+    """
+    Standard Static SSM (Mamba-like but purely recurrent for fair comparison)
+    """
+    def __init__(self, vocab_size, d_model, state_dim, num_layers=2):
+        super().__init__()
+        self.d_model = d_model
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        
+        self.layers = nn.ModuleList([
+            LinearRecurrentUnit(d_model, state_dim)
+             for _ in range(num_layers)
+        ])
+        
+        self.output_head = nn.Linear(d_model, vocab_size)
+
+    def forward(self, input_ids):
+        x = self.embedding(input_ids)
+        batch, seq_len, _ = x.shape
+        
+        h_states = [None] * len(self.layers)
+        final_layer_outputs = []
+        
+        for t in range(seq_len):
+            xt = x[:, t, :]
+            for i, lru in enumerate(self.layers):
+                yt, ht_next, _ = lru(xt, h_states[i], dynamic_gates=None)
+                h_states[i] = ht_next
+                xt = yt + xt # Residual
+            final_layer_outputs.append(xt)
+            
+        output_seq = torch.stack(final_layer_outputs, dim=1)
+        logits = self.output_head(output_seq)
+        return logits, []
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from models import ANAModel
+from data import AssociativeRecallDataset
+import matplotlib.pyplot as plt
+import os
+import json
+import numpy as np
+
+def train_one_epoch(model, dataloader, optimizer, criterion, device):
+    model.train()
+    total_loss = 0
+    
+    for x, y in dataloader:
+        if x.size(1) > 2000: # Safety for GPU emm
+            x = x[:, -1024:]
+            y = y[:, -1024:]
+            
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        
+        logits, _ = model(x)
+        
+        # Flatten
+        loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
+        
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        
+        total_loss += loss.item()
+        
+    return total_loss / len(dataloader)
+
+def evaluate(model, dataloader, criterion, device):
+    model.eval()
+    total_loss = 0
+    stats = {
+        'ga_A': [], 'ga_B': [], 'ret_gate': []
+    }
+    
+    with torch.no_grad():
+        for x, y in dataloader:
+            x, y = x.to(device), y.to(device)
+            
+            logits, info_log = model(x, return_info=True)
+            loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
+            total_loss += loss.item()
+            
+            # Aggregate stats
+            for info in info_log:
+                stats['ga_A'].append(info['ga_A'])
+                stats['ga_B'].append(info['ga_B'])
+                stats['ret_gate'].append(info['ret_gate'])
+                
+    # Mean stats
+    avg_stats = {k: np.mean(v) if v else 0.0 for k, v in stats.items()}
+    return total_loss / len(dataloader), avg_stats
+
+def col_fn(batch):
+    # Padding collision
+    # Find max len
+    max_len = max([x.size(0) for x, y in batch])
+    
+    xs, ys = [], []
+    for x, y in batch:
+        pad = max_len - x.size(0)
+        if pad > 0:
+            x = torch.cat([x, torch.zeros(pad, dtype=torch.long)])
+            y = torch.cat([y, torch.zeros(pad, dtype=torch.long)])
+        xs.append(x)
+        ys.append(y)
+        
+    return torch.stack(xs), torch.stack(ys)
+
+def main():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Hyperparams
+    VOCAB_SIZE = 40
+    D_MODEL = 64
+    STATE_DIM = 64
+    NUM_LAYERS = 2
+    BATCH_SIZE = 16
+    EPOCHS = 6 # Stage 2A
+    
+    # Dataset
+    # Noise range 20 to 50
+    dataset = AssociativeRecallDataset(size=2000, vocab_size=VOCAB_SIZE, min_noise=20, max_noise=50)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=col_fn)
+    
+    # Model: Single Phase 2 ANA
+    model = ANAModel(VOCAB_SIZE, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
+    
+    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+    
+    print("Starting Stage 2A: Associative Recall Training...")
+    
+    history = {'loss': [], 'ga_A': [], 'ga_B': [], 'ret': []}
+    
+    for epoch in range(EPOCHS):
+        val_loss, stats = evaluate(model, dataloader, criterion, device) # Pre-eval
+        print(f"Epoch {epoch} (Pre) | Loss: {val_loss:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
+        
+        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
+        val_loss, stats = evaluate(model, dataloader, criterion, device)
+        
+        print(f"Epoch {epoch+1} | Loss: {val_loss:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
+        
+        history['loss'].append(val_loss)
+        history['ga_A'].append(stats['ga_A'])
+        history['ga_B'].append(stats['ga_B'])
+        history['ret'].append(stats['ret_gate'])
+        
+    # Save
+    with open('results_phase2a.json', 'w') as f:
+        json.dump(history, f, indent=2)
+        
+    # Save Model Weights
+    torch.save(model.state_dict(), 'model_stage2a.pt')
+        
+    print("Stage 2A Complete.")
+    
+def train_stage_2b():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Hyperparams
+    VOCAB_SIZE_TXT = 256 # Char level
+    D_MODEL = 64
+    STATE_DIM = 64
+    NUM_LAYERS = 2
+    BATCH_SIZE = 32
+    EPOCHS = 4 # Warmup
+    
+    # Dataset (Use local files as fallback)
+    # Concatenate some files
+    os.system("cat *.py README.md > corpus.txt")
+    dataset = TextDataset('corpus.txt', seq_len=64)
+    if len(dataset) == 0:
+        print("Error: Corpus empty.")
+        return
+        
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    
+    # Model: New vocab size
+    model = ANAModel(VOCAB_SIZE_TXT, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
+    
+    # Load Weights from Stage 2A (Partial)
+    if os.path.exists('model_stage2a.pt'):
+        print("Loading Stage 2A weights (Filtering embedding/head)...")
+        state_dict = torch.load('model_stage2a.pt')
+        model_dict = model.state_dict()
+        
+        # Filter out mismatching keys
+        pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict and v.size() == model_dict[k].size()}
+        
+        model_dict.update(pretrained_dict)
+        model.load_state_dict(model_dict)
+    else:
+        print("Warning: Stage 2A weights not found. Starting fresh.")
+        
+    # Freeze HoloLink? "Train only Tracks and Controller"
+    # To freeze HoloLink:
+    for layer in model.layers:
+        for param in layer['holo'].parameters():
+            param.requires_grad = False
+            
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
+    
+    print("Starting Stage 2B: Text Warmup (Holo Frozen)...")
+    history = {'loss': []}
+    
+    for epoch in range(EPOCHS):
+        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
+        print(f"Epoch {epoch+1} | Loss: {train_loss:.4f}")
+        history['loss'].append(train_loss)
+        
+    with open('results_phase2b.json', 'w') as f:
+        json.dump(history, f, indent=2)
+
+if __name__ == '__main__':
+    # Toggle stages
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == '2b':
+        from data import TextDataset # local import
+        train_stage_2b()
+    else:
+        main()
+# The Adaptive Neural Automaton (ANA)
+## *A Specification for Algorithmic, Metaprogrammed Language Modeling*
+
+### 1. Executive Overview
+The **Adaptive Neural Automaton (ANA)** is a fundamental re-architecting of the Language Model. It abandons the static, dense matrix multiplications of Transformers for a **dynamic, multi-track computational substrate** driven by algorithmic metaprogramming.
+
+By treating language processing as the evolution of a **Cellular State Machine**, ANA achieves:
+1.  **True $O(N)$ Complexity:** Linear scaling via parallelized associative scans.
+2.  **Infinite Effective Context:** A decoupling of memory size from compute cost via holographic state compression.
+3.  **Algorithmic Plasticity:** The model actively rewrites its transition functions (its "thinking process") in real-time based on the input domain (e.g., switching to "logic-mode" for code, "narrative-mode" for story).
+
+---
+
+### 2. Theoretical Foundation: The Generalized State Equation
+
+ANA is built upon a generalization of State Space Models (SSMs). We define the sequence processing not as a lookup, but as the evolution of a hidden state $h_t$ governed by a dynamic transition rule set.
+
+$$h_{t} = \text{Evo}\left(h_{t-1}, x_{t}, \Theta_{\text{meta}}(z_t)\right)$$
+
+Where:
+*   $h_t$ is the high-dimensional state vector.
+*   $x_t$ is the input embedding.
+*   $\Theta_{\text{meta}}(z_t)$ is the **Metaprogrammed Parameter Set**, generated dynamically by a controller analyzing the global latent context $z_t$.
+
+---
+
+### 3. Core Architecture Specification
+
+The ANA consists of three distinct logical layers: **The Substrate (State)**, **The Cortex (Controller)**, and **The Engine (Execution)**.
+
+#### 3.1 The Multi-Track Substrate (State Representation)
+Instead of a monolithic hidden vector, ANA splits its state $h_t$ into $K$ **Specialized Tracks** running in parallel but with independent evolution rules. This is the structural implementation of metaprogramming.
+
+*   **Track 1: The Syntactic Tape (High Frequency):** Operates on local n-grams. Fast decay, high sensitivity to token changes. Uses a *Diffusion Kernel*.
+*   **Track 2: The Semantic Net (Low Frequency):** Operates on concepts and entities. Slow decay, integrates information over long horizons. Uses a *Retention Kernel*.
+*   **Track 3: The Logic Scratchpad (Volatile):** A dedicated track for multi-step reasoning (e.g., holding variables for math or code). Uses a *Working-Memory Kernel*.
+
+**Initialization:** Input tokens are projected and partitioned into these tracks.
+
+#### 3.2 The Cortical Hyper-Controller (Metaprogrammer)
+This is the "brain" that manages the ANA. It is a lightweight, shallow Transformer network that operates on a **Global Summary Vector** $z$ (updated every $N$ tokens) and the **Current Input**.
+
+**Its Output: The "Instruction Set"**
+The Controller does not process the data; it configures the processor. It generates the parameters for the next evolution step:
+
+1.  **Kernel Weights ($W_{track}$):** Generates specific transition matrices for each track.
+    *   *Innovation:* If the Controller detects a Python block, it forces $W_{Logic}$ to behave like a stack (push/pop). If it detects a story, it forces $W_{Semantic}$ to maximize associative links.
+2.  **Gating Coefficients ($g$):** Determines the "mix" between tracks (e.g., "Listen more to Syntax than Logic right now").
+3.  **Discrete Policy Tokens:** Emits special tokens that trigger sub-routines (e.g., `<RETRIEVE_PAST>`, `<SUMMARIZE>`).
+
+#### 3.3 The Parallel Evolution Engine (Execution)
+The Engine applies the Controller's instructions to the Substrate. To solve the latency problem of Cellular Automata, ANA utilizes **Hardware-Aware Associative Scans**.
+
+**The Update Rule:**
+For each track $k \in \{1..K\}$, we apply a discretized Linear Recurrent Unit:
+
+$$h_t^k = \sigma(A^k_t) \cdot h_{t-1}^k + B^k_t \cdot x_t$$
+
+*   **$A^k_t$ (The Decay Matrix):** Generated by the Controller. Controls the memory horizon of the track.
+*   **$B^k_t$ (The Injection Matrix):** Generated by the Controller. Controls how much new input is accepted.
+*   **$\sigma$:** SiLU activation for smooth gradient flow.
+
+**Parallelization:**
+While this equation looks sequential (RNN), it is mathematically equivalent to a **Parallel Prefix Scan** (Cumulative Sum). We use the `torch associative scan` (or CUDA kernel equivalent) to compute the sequence evolution for the entire context window in $O(\log N)$ steps on GPU, and $O(N)$ on CPU/TPU.
+
+---
+
+### 4. The "Holo-Link" Solving the Retrieval Gap
+
+A known weakness of Linear/RNN models is "associative recall" (finding a specific needle in a haystack). ANA solves this via **Holographic Binding**.
+
+1.  **Random Projection Keys:** As the state $h_t$ evolves, it is projected into a lower-dimensional "Key Space" using a fixed, random Gaussian matrix $R$.
+2.  **Value Binding:** The "Value" is the hidden state $h_t$ itself.
+3.  **Holographic Vector:** The Global Summary $z$ accumulates the sum of these Key-Value pairs: $z_{new} = z_{old} + \text{Key}(h_t) \cdot h_t$.
+4.  **Readout:** To retrieve information relevant to current input $x_t$, we compute the similarity $\text{sim}(Key(x_t), z)$. Because the keys are random vectors, interference is minimal (Johnson-Lindenstrauss lemma), allowing precise retrieval of past states without scanning the whole history.
+
+---
+
+### 5. Dynamic Compute & Training Protocol
+
+#### Adaptive Depth (The "Time-Dilation" Mechanism)
+ANA does not perform a fixed amount of computation per token.
+*   The **Hyper-Controller** predicts a **"Compute Budget"** $c \in [1, 4]$ for the current token.
+*   The Evolution Engine runs $c$ micro-steps of the CA update for that token.
+*   **Result:** Simple tokens (like "the", "and") are processed in 1 step. Complex reasoning tokens (like "therefore", "implies") trigger 4 steps of deep simulation. This drastically increases efficiency without loss of performance.
+
+#### Training Strategy: Curriculum Stability
+1.  **Phase 1 (Static Physics):** Freeze the Hyper-Controller. Initialize $A^k$ and $B^k$ to standard values (e.g., S4 or Mamba initialization). Train the Input/Output embeddings to maximize $L_{LM}$. This creates a stable, functioning CA.
+2.  **Phase 2 (Unlocking the Cortex):** Unfreeze the Hyper-Controller. Use a small learning rate. Introduce a **KL-Divergence Loss** between the Controller's output and a "prior distribution" (Gaussian). This prevents the Controller from generating chaotic rules that explode the gradients.
+3.  **Phase 3 (Track Specialization):** Add auxiliary losses. For example, force the "Logic Track" to improve performance on arithmetic datasets, and the "Semantic Track" on summarization datasets. This encourages the tracks to diverge and specialize.
+
+---
+
+### 6. Performance Summary
+
+| Metric | Transformer | Mamba (SSM) | **ANA (Proposed)** |
+| :--- | :--- | :--- | :--- |
+| **Context Length** | Finite (Windowed) | Infinite (Recall decay) | **Infinite (Holo-Link)** |
+| **Inference Speed** | $O(N)$ (Decode) | $O(1)$ (Decode) | $O(1)$ (Dynamic) |
+| **Training Speed** | Slow (Memory bound) | Fast (Parallel Scan) | **Fast (Parallel Scan)** |
+| **Reasoning** | Strong (Attention) | Weak (Heuristic) | **Strong (Logic Track)** |
+| **Adaptability** | Static (Fine-tune only) | Static | **Metaprogrammed (Real-time)** |
+
+### 7. Why ANA Wins
+The Adaptive Neural Automaton represents the shift from **"Static Weights"** to **"Dynamic Algorithms"**. By separating the state into specialized tracks and governed by a hyper-network that understands the *nature* of the task, ANA achieves the density of human cognition: fast, reflexive processing for most inputs, but capable of switching into deep, slow, logical reasoning when the metaprogram detects the need.
+
+Yes, this is absolutely worth experimenting with, but it falls into the **"High Risk, High Reward"** category of research.
+
+It is not a speculative "moonshot" (like trying to invent a new fundamental physics); it is grounded in proven components (State Space Models, Associative Scans) combined with a novel, unstable control mechanism (Metaprogrammed Weights).
+
+Here is the validation breakdown, analyzing exactly where the breakthrough potential lies versus where the project is likely to fail.
+
+---
+
+### 1. The "Green Flags" (Why it could work)
+
+**A. The SSM Foundation is Solid**
+The core of ANA—the "Evolution Engine"—is effectively a Mamba/Selective SSM variant. We know from the Mamba paper (and others like RWKV-6) that **Selective State Spaces** work. They scale linearly, they train fast, and they handle long context better than Transformers. You aren't betting on an unproven substrate; you are betting on a superior *controller* for a proven substrate.
+
+**B. The Multi-Track Modality is Intuitive**
+The "Split-Brain" approach (Syntactic Track vs. Logic Track) is biologically inspired and addresses a real flaw in current SSMs: the tug-of-war between remembering *facts* (long-term) and *details* (short-term). By architecturally separating these, you solve the "forgetting" problem without massive parameter bloat.
+
+**C. Dynamic Compute is the Next Frontier**
+The industry is moving toward "test-time compute." A model that decides to "think longer" (Adaptive Depth) on hard tokens is exactly the trajectory AI is taking. If you can make this work efficiently, you beat models that waste FLOPs on easy tokens.
+
+---
+
+### 2. The "Red Flags" (Why it might fail)
+
+**A. The "Vanishing Gradient" Trap (Critical Risk)**
+Your **Cortical Hyper-Controller** is the single point of failure.
+*   **The Problem:** You are asking a neural network to predict the *weights* of another network (the SSM matrices). If the controller predicts a weight of `1.01`, the SSM might explode. If it predicts `0.99`, it might vanish.
+*   **The Danger:** During backpropagation, the gradients have to flow through the *generated* weights. This is notoriously unstable. You might find that the Controller learns to output "Safe, Boring Weights" (essentially copying the initialization) just to avoid crashing the loss function, rendering the "Metaprogramming" aspect null.
+
+**B. The "Oracle" Bottleneck**
+If the Hyper-Controller is too shallow, it won't be smart enough to understand the context well enough to change the rules. If it's too deep, it becomes computationally expensive to run for every token (defeating the efficiency goal).
+*   **Risk:** You spend 80% of your compute generating rules and only 20% actually processing the text.
+
+**C. Hardware Utilization**
+Transformers are dominant because GPUs are built for Matrix Multiplication (GEMM). Associative Scans are memory-bound.
+*   **The Risk:** Even if ANA is $O(N)$ theoretically, it might run **slower** in wall-clock time than a Transformer on an NVIDIA H100 because the hardware isn't optimized for the specific memory-access patterns of parallel scans.
+
+---
+
+### 3. Validation Protocol: How to Test Cheaply
+
+Do not build the full ANA immediately. Run a **"Kill-Criteria"** experiment to validate the Metaprogramming aspect before scaling up.
+
+#### Phase 1: The "Static vs. Dynamic" Test (Low Cost)
+*   **Setup:** Build a tiny 2-layer SSM model (e.g., 8M params).
+*   **Baseline:** Train it with static weights (standard Mamba).
+*   **Experiment:** Add a tiny Hyper-Controller that predicts a *scalar* "gate" or "temperature" for the SSM matrices (not full matrices, just one number that tweaks the behavior).
+*   **Goal:** Does the controller learn to use this freedom? Does the loss go lower than the baseline?
+*   **Kill Criteria:** If the controller converges to always outputting `1.0` (doing nothing) or if the loss is higher/unstable, **stop.** The metaprogramming concept is too unstable for this architecture.
+
+#### Phase 2: The Multi-Track Test (Medium Cost)
+*   **Setup:** A 1-layer model with two independent state tracks.
+*   **Experiment:** Train on a synthetic task that requires separating syntax (local) from counting (long-range).
+*   **Goal:** Show that Track A specializes for syntax and Track B for counting *without* explicit supervision labels.
+*   **Kill Criteria:** If both tracks learn the same thing (redundancy), the modularity adds no value.
+
+#### Phase 3: The Holo-Link Needle Test
+*   **Setup:** Standard "Needle in a Haystack" benchmark (1M context).
+*   **Goal:** Verify that the random projection retrieval actually beats standard Mamba recall.
+*   **Risk:** Random projections get noisy. If retrieval accuracy is <90%, the Holo-Link needs to be replaced with a standard KV-Cache.
+
+---
+
+### 4. Final Verdict
+
+**Recommendation: Proceed, but Decouple.**
+
+The **ANA** architecture is 90% a solid Linear RNN (SSM) and 10% a risky Metaprogramming experiment.
+*   If the Metaprogramming fails, you strip it out and you still have a **Multi-Track SSM** (which is likely better than Mamba due to modularity).
+*   If the Metaprogramming works, you have a breakthrough.
+
+**Strategy for Success:**
+Start by implementing the **Multi-Track SSM** with **Static Weights**. Get that performing better than Mamba. *Then*, introduce the Hyper-Controller as a fine-tuning step or a "low-rank adapter." Do not try to learn the physics from scratch; learn to *modulate* pre-trained physics.
+
+This is absolutely worth the experiment. The "thinking vs. remembering" separation is the key to General Intelligence, and ANA is the closest architectural approximation to that concept I have seen.

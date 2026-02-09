@@ -1,0 +1,7 @@
+Using device: cuda
+Warning: Stage 2A weights not found. Starting fresh.
+Starting Stage 2B: Text Warmup (Holo Frozen)...
+Epoch 1 | Loss: 228435.1911
+Epoch 2 | Loss: 7.8218
+Epoch 3 | Loss: 3.9096
+Epoch 4 | Loss: 3.1128

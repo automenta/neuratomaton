@@ -1,0 +1,13 @@
+Using device: cuda
+Starting Training...
+Epoch 1/8 | ANA Loss: 3.3163 | Base Loss: 3.3375
+Epoch 2/8 | ANA Loss: 3.0352 | Base Loss: 3.1244
+Epoch 3/8 | ANA Loss: 2.8866 | Base Loss: 3.0280
+Epoch 4/8 | ANA Loss: 2.7648 | Base Loss: 2.9711
+Epoch 5/8 | ANA Loss: 2.6846 | Base Loss: 2.9409
+Epoch 6/8 | ANA Loss: 2.6213 | Base Loss: 2.9269
+Epoch 7/8 | ANA Loss: 2.5652 | Base Loss: 2.9139
+Epoch 8/8 | ANA Loss: 2.5276 | Base Loss: 2.9110
+Gtk-Message: 11:57:46.432: Failed to load module "colorreload-gtk-module"
+Gtk-Message: 11:57:46.432: Failed to load module "window-decorations-gtk-module"
+Training complete. Results saved.

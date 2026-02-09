@@ -1,0 +1,12 @@
+Using device: cuda
+Starting Stage 3A: Forced Holo-Link Curriculum...
+Epoch 1 | Force: 1.00 | Train Loss: 3.5733 | Val Loss: 3.4990 | Gates: A=-0.40, Ret=0.50
+Epoch 2 | Force: 1.00 | Train Loss: 3.4857 | Val Loss: 3.4926 | Gates: A=-0.89, Ret=0.50
+Epoch 3 | Force: 1.00 | Train Loss: 3.4827 | Val Loss: 3.4893 | Gates: A=-1.13, Ret=0.50
+Epoch 4 | Force: 0.67 | Train Loss: 3.4801 | Val Loss: 3.4823 | Gates: A=-1.37, Ret=0.73
+Epoch 5 | Force: 0.33 | Train Loss: 3.4785 | Val Loss: 3.4775 | Gates: A=-1.72, Ret=0.81
+Epoch 6 | Force: 0.00 | Train Loss: 3.4781 | Val Loss: 3.4797 | Gates: A=-2.01, Ret=0.79
+Epoch 7 | Force: 0.00 | Train Loss: 3.4773 | Val Loss: 3.4764 | Gates: A=-2.14, Ret=0.74
+Epoch 8 | Force: 0.00 | Train Loss: 3.4772 | Val Loss: 3.4771 | Gates: A=-2.22, Ret=0.68
+Epoch 9 | Force: 0.00 | Train Loss: 3.4766 | Val Loss: 3.4748 | Gates: A=-2.50, Ret=0.64
+Epoch 10 | Force: 0.00 | Train Loss: 3.4751 | Val Loss: 3.4729 | Gates: A=-2.93, Ret=0.58
