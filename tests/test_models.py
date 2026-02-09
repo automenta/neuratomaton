@@ -45,7 +45,7 @@ class TestModels(unittest.TestCase):
         ctl = HyperController(self.config)
         x = torch.randn(self.config.batch_size, self.config.d_model)
 
-        track_outputs, g_ret = ctl(x)
+        track_outputs, g_ret, g_halt = ctl(x)
 
         self.assertEqual(len(track_outputs), self.config.track_count)
         # Check first track
@@ -55,6 +55,7 @@ class TestModels(unittest.TestCase):
         self.assertEqual(mix.shape, (self.config.batch_size, 1))
 
         self.assertEqual(g_ret.shape, (self.config.batch_size, 1))
+        self.assertEqual(g_halt.shape, (self.config.batch_size, 1))
 
     def test_anamodel_forward(self):
         model = ANAModel(self.config)

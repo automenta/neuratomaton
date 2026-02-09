@@ -7,6 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 from .models import ANAModel
 from .data import AssociativeRecallDataset, TextDataset
 from .config import ANAConfig
+from .eval import CopyTaskDataset, ReverseTaskDataset, run_eval_task
 import matplotlib.pyplot as plt
 import os
 import json
@@ -245,8 +246,9 @@ def train_stage_3a(config: ANAConfig):
     writer = SummaryWriter(log_dir)
     print(f"Logging to {log_dir}")
 
-    dataset = AssociativeRecallDataset(size=2000, vocab_size=config.vocab_size, min_noise=1, max_noise=5)
-    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True, collate_fn=col_fn)
+    # Initial difficulty
+    min_noise = 1
+    max_noise = 5
     
     model = ANAModel(config).to(config.device)
     
@@ -257,6 +259,14 @@ def train_stage_3a(config: ANAConfig):
     global_step = 0
     
     for epoch in range(config.epochs):
+        # Complexity Curriculum: Increase noise every few epochs
+        if epoch > 2:
+            max_noise = min(50, 5 + (epoch - 2) * 5)
+
+        dataset = AssociativeRecallDataset(size=2000, vocab_size=config.vocab_size, min_noise=min_noise, max_noise=max_noise)
+        dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True, collate_fn=col_fn)
+
+        # Forcing Curriculum
         if epoch < 3:
             force_prob = 1.0
         elif epoch < 6:
@@ -268,11 +278,23 @@ def train_stage_3a(config: ANAConfig):
         
         val_loss, stats, acc = evaluate(model, dataloader, criterion, config.device)
         
-        print(f"Epoch {epoch+1} | Force: {force_prob:.2f} | Loss: {val_loss:.4f} | Acc: {acc:.4f}")
+        # Reasoning Evals
+        copy_score = 0.0
+        rev_score = 0.0
+        if epoch % 2 == 0:
+            copy_ds = CopyTaskDataset(size=200, vocab_size=config.vocab_size, seq_len=10)
+            rev_ds = ReverseTaskDataset(size=200, vocab_size=config.vocab_size, seq_len=10)
+            copy_score = run_eval_task(model, copy_ds, config.device)
+            rev_score = run_eval_task(model, rev_ds, config.device)
         
+        print(f"Epoch {epoch+1} | Force: {force_prob:.2f} | Noise: {max_noise} | Loss: {val_loss:.4f} | Acc: {acc:.4f} | Copy: {copy_score:.2f} | Rev: {rev_score:.2f}")
+
+        writer.add_scalar('Train/Max_Noise', max_noise, epoch)
         writer.add_scalar('Val/Loss', val_loss, epoch)
         writer.add_scalar('Val/Accuracy', acc, epoch)
         writer.add_scalar('Train/Force_Prob', force_prob, epoch)
+        writer.add_scalar('Eval/Copy_Acc', copy_score, epoch)
+        writer.add_scalar('Eval/Rev_Acc', rev_score, epoch)
 
     writer.close()
 

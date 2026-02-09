@@ -40,35 +40,12 @@ def parallel_scan_log(u, alpha, beta, h_init):
         a = torch.cat([a, a_pad], dim=1)
         b = torch.cat([b, b_pad], dim=1)
     else:
-        # Clone to avoid in-place modification issues if any (though we assign to new vars)
         a = a.clone()
         b = b.clone()
 
     # Log iterations
     log_n = int(math.log2(n))
 
-    curr_a = a
-    curr_b = b
-
-    for i in range(log_n):
-        d = 2**i
-
-        # Shift
-        # Pad with identity (1, 0)
-        a_shifted = torch.cat([torch.ones(batch, d, dim, device=a.device), curr_a[:, :-d]], dim=1)
-        b_shifted = torch.cat([torch.zeros(batch, d, dim, device=b.device), curr_b[:, :-d]], dim=1)
-
-        # Update
-        # new_a = curr_a * a_shifted
-        # new_b = curr_a * b_shifted + curr_b
-        curr_a = curr_a * a_shifted
-        curr_b = curr_a * b_shifted + curr_b # Error: curr_a is already updated? No, new assignment.
-        # Wait, Python evaluates RHS first.
-        # But `curr_a` in the second line uses the OLD `curr_a`?
-        # No, if I do `curr_a = ...`, then `curr_b = ...` uses the NEW `curr_a`.
-        # I need temporaries.
-
-    # Correct Loop:
     curr_a = a
     curr_b = b
 
@@ -159,7 +136,7 @@ class HyperController(nn.Module):
     """
     HyperController for Multi-Track ANA + HoloLink.
     Outputs per track: alpha_gate, beta_gate, mix_logit
-    Plus: retrieval_gate
+    Plus: retrieval_gate, halt_logit
     """
     def __init__(self, config: ANAConfig, hidden_dim=64):
         super().__init__()
@@ -172,8 +149,8 @@ class HyperController(nn.Module):
         )
         
         # 2 scalars (alpha, beta) + 1 scalar (mix) per track
-        # + 1 scalar (retrieval)
-        self.output_dim = config.track_count * 3 + 1
+        # + 1 scalar (retrieval) + 1 scalar (halt)
+        self.output_dim = config.track_count * 3 + 2
         self.head = nn.Linear(hidden_dim, self.output_dim)
 
         with torch.no_grad():
@@ -182,7 +159,7 @@ class HyperController(nn.Module):
 
     def split_outputs(self, out):
         # out: [..., output_dim]
-        # Structure: [Track1_Alpha, Track1_Beta, Track1_Mix, Track2..., Ret]
+        # Structure: [Track1_Alpha, Track1_Beta, Track1_Mix, Track2..., Ret, Halt]
 
         track_outputs = []
         idx = 0
@@ -194,35 +171,37 @@ class HyperController(nn.Module):
             idx += 3
 
         ret_gate = out[..., idx:idx+1]
-        return track_outputs, ret_gate
+        halt_logit = out[..., idx+1:idx+2]
+        return track_outputs, ret_gate, halt_logit
 
     def forward(self, x, force_prob=0.0):
         features = self.net(x)
         out = self.head(features)
         
-        track_outputs, g_ret = self.split_outputs(out)
+        track_outputs, g_ret, g_halt = self.split_outputs(out)
         
         if self.training and force_prob > 0.0:
             mask = (torch.rand_like(g_ret) < force_prob).float()
             g_ret = mask * 5.0 + (1.0 - mask) * g_ret
         
-        return track_outputs, g_ret
+        return track_outputs, g_ret, g_halt
 
     def forward_sequence(self, x, force_prob=0.0):
         features = self.net(x)
         out = self.head(features)
 
-        track_outputs, g_ret = self.split_outputs(out)
+        track_outputs, g_ret, g_halt = self.split_outputs(out)
 
         if self.training and force_prob > 0.0:
             mask = (torch.rand_like(g_ret) < force_prob).float()
             g_ret = mask * 5.0 + (1.0 - mask) * g_ret
 
-        return track_outputs, g_ret
+        return track_outputs, g_ret, g_halt
 
 class HoloLink(nn.Module):
     """
     Associative Memory Module using Matrix Accumulation / Linear Attention.
+    Includes learned binding strength.
     """
     def __init__(self, config: ANAConfig, input_dim: int):
         super().__init__()
@@ -233,6 +212,10 @@ class HoloLink(nn.Module):
         self.k_proj = nn.Linear(input_dim, self.key_dim, bias=False)
         self.v_proj = nn.Linear(input_dim, self.d_model, bias=False)
         
+        # Learned binding strength (starts small, learns to increase)
+        # Using softplus to ensure positive
+        self.binding_strength = nn.Parameter(torch.tensor(1.0))
+
     def forward(self, x_t, h_t, M_prev):
         batch_size = x_t.size(0)
         
@@ -244,7 +227,10 @@ class HoloLink(nn.Module):
         k_t = torch.nn.functional.normalize(k_t, p=2, dim=-1)
         v_t = self.v_proj(h_t)
         
-        update = torch.bmm(k_t.unsqueeze(2), v_t.unsqueeze(1))
+        # Apply binding strength
+        strength = F.softplus(self.binding_strength)
+        update = strength * torch.bmm(k_t.unsqueeze(2), v_t.unsqueeze(1))
+
         M_t = M_prev + update
         
         q_t = self.q_proj(x_t)
@@ -258,7 +244,10 @@ class HoloLink(nn.Module):
         k = torch.nn.functional.normalize(k, p=2, dim=-1)
         v = self.v_proj(h)
 
-        update = torch.matmul(k.unsqueeze(-1), v.unsqueeze(-2))
+        # Apply binding strength
+        strength = F.softplus(self.binding_strength)
+        update = strength * torch.matmul(k.unsqueeze(-1), v.unsqueeze(-2))
+
         M_seq = torch.cumsum(update, dim=1)
 
         q = self.q_proj(x)
@@ -293,7 +282,6 @@ class ANAModel(nn.Module):
                 # Inputs concatenated state of all tracks
                 layer_dict['holo'] = HoloLink(config, input_dim=config.state_dim * config.track_count)
 
-            # Initialize LRU biases to diversify tracks
             if config.track_count == 2:
                 with torch.no_grad():
                     # Track A (Reflex)
@@ -309,6 +297,15 @@ class ANAModel(nn.Module):
         self.output_head = nn.Linear(config.d_model, config.vocab_size)
 
     def forward_parallel(self, input_ids, return_info=False, force_prob=0.0):
+        # NOTE: Thinking steps are not compatible with parallel scan in current form
+        # because the input at step t depends on thinking output at step t-1?
+        # Actually, thinking steps are "vertical" recursion.
+        # If max_thinking_steps > 0, we can't easily parallelize over time IF thinking duration varies.
+        # If thinking duration is fixed, we can parallelize.
+        # For now, if max_thinking_steps > 0, we fallback to sequential forward unless implemented.
+        if self.config.max_thinking_steps > 0:
+            return self.forward_sequential(input_ids, return_info, force_prob)
+
         x = self.embedding(input_ids)
         info_log = []
 
@@ -319,7 +316,7 @@ class ANAModel(nn.Module):
 
             if self.config.use_controller:
                 ctl = layer['controller']
-                track_outputs, g_ret = ctl.forward_sequence(x, force_prob=force_prob)
+                track_outputs, g_ret, _ = ctl.forward_sequence(x, force_prob=force_prob)
 
             # 2. Update Tracks
             track_states = []
@@ -378,10 +375,7 @@ class ANAModel(nn.Module):
         logits = self.output_head(x)
         return logits, info_log
 
-    def forward(self, input_ids, return_info=False, force_prob=0.0):
-        if self.config.use_parallel_scan:
-             return self.forward_parallel(input_ids, return_info, force_prob)
-
+    def forward_sequential(self, input_ids, return_info=False, force_prob=0.0):
         x = self.embedding(input_ids)
         batch, seq_len, _ = x.shape
         
@@ -397,59 +391,113 @@ class ANAModel(nn.Module):
             for i, layer in enumerate(self.layers):
                 tracks = layer['tracks']
                 
-                # 1. Controller
-                track_outputs = None
-                g_ret = None
+                # Thinking Steps Loop
+                # We loop up to max_thinking_steps + 1 (the 1 is the actual processing)
+                # But actually, thinking steps implies we refine the state without consuming new input.
+                # Simplified ACT (Adaptive Computation Time):
+                # We reuse the same xt? No, we update xt.
+                # Let's say we have an internal recurrence.
                 
-                if self.config.use_controller:
-                    ctl = layer['controller']
-                    track_outputs, g_ret = ctl(xt, force_prob=force_prob)
-                
-                # 2. Update Tracks
-                track_results = []
-                track_mix_logits = []
+                steps_taken = 0
+                while steps_taken <= self.config.max_thinking_steps:
+                    # 1. Controller
+                    track_outputs = None
+                    g_ret = None
+                    g_halt = None
 
-                for t_idx, track in enumerate(tracks):
-                    gates = None
-                    mix = None
-                    if track_outputs is not None:
-                        g_alpha, g_beta, g_mix = track_outputs[t_idx]
-                        gates = (g_alpha, g_beta)
-                        mix = g_mix
+                    if self.config.use_controller:
+                        ctl = layer['controller']
+                        track_outputs, g_ret, g_halt = ctl(xt, force_prob=force_prob)
 
-                    yt, ht = track(xt, h_states[i][t_idx], dynamic_gates=gates)
-                    h_states[i][t_idx] = ht
-                    track_results.append(yt)
+                    # Check halt
+                    should_halt = False
+                    if self.config.max_thinking_steps > 0:
+                         if g_halt is not None:
+                             halt_prob = torch.sigmoid(g_halt)
+                             # If halt prob > 0.5, we stop thinking (batch-wise?)
+                             # For simplicity in batch training, we just run fixed steps or average?
+                             # Standard ACT is complex.
+                             # Simplified: We just run max_thinking_steps fixed for now if > 0.
+                             # Or we define it as: we run at least 1 step.
+                             pass
 
-                    if mix is not None:
-                        track_mix_logits.append(mix)
-                    else:
-                        track_mix_logits.append(torch.zeros(batch, 1, device=x.device))
-                
-                # Mixing
-                stacked_results = torch.stack(track_results, dim=1)
-                stacked_mix = torch.stack(track_mix_logits, dim=1)
-                mix_weights = torch.softmax(stacked_mix, dim=1)
+                    # 2. Update Tracks
+                    track_results = []
+                    track_mix_logits = []
 
-                layer_out = (stacked_results * mix_weights).sum(dim=1)
-                
-                # 3. HoloLink
-                qt = 0
-                if self.config.use_hololink:
-                    holo = layer['holo']
-                    ht_combined = torch.cat(h_states[i], dim=-1)
-                    qt, mt_next = holo(xt, ht_combined, m_states[i])
-                    m_states[i] = mt_next
-                
-                # 4. Merge
-                if self.config.use_controller and self.config.use_hololink:
-                    ret_gate = torch.sigmoid(g_ret)
-                    layer_out = layer_out + ret_gate * qt
-                elif self.config.use_hololink:
-                    layer_out = layer_out + qt
-                
-                xt = xt + layer_out
-                
+                    # Temporary state update for thinking?
+                    # If we "think", do we update the permanent state h_t?
+                    # Usually ACT updates the hidden state in place.
+
+                    new_h_states_layer = []
+
+                    for t_idx, track in enumerate(tracks):
+                        gates = None
+                        mix = None
+                        if track_outputs is not None:
+                            g_alpha, g_beta, g_mix = track_outputs[t_idx]
+                            gates = (g_alpha, g_beta)
+                            mix = g_mix
+
+                        # Use current h_state
+                        h_prev = h_states[i][t_idx]
+                        yt, ht = track(xt, h_prev, dynamic_gates=gates)
+
+                        new_h_states_layer.append(ht)
+                        track_results.append(yt)
+
+                        if mix is not None:
+                            track_mix_logits.append(mix)
+                        else:
+                            track_mix_logits.append(torch.zeros(batch, 1, device=x.device))
+
+                    # Update states (in-place for the next micro-step)
+                    h_states[i] = new_h_states_layer
+
+                    # Mixing
+                    stacked_results = torch.stack(track_results, dim=1)
+                    stacked_mix = torch.stack(track_mix_logits, dim=1)
+                    mix_weights = torch.softmax(stacked_mix, dim=1)
+
+                    layer_out = (stacked_results * mix_weights).sum(dim=1)
+
+                    # 3. HoloLink (Only update memory once? Or every micro-step?)
+                    # If we update memory every micro-step, we write multiple times per token.
+                    # Maybe only read?
+                    # Let's say we update everything.
+
+                    qt = 0
+                    if self.config.use_hololink:
+                        holo = layer['holo']
+                        ht_combined = torch.cat(h_states[i], dim=-1)
+                        qt, mt_next = holo(xt, ht_combined, m_states[i])
+                        m_states[i] = mt_next
+
+                    # 4. Merge
+                    if self.config.use_controller and self.config.use_hololink:
+                        ret_gate = torch.sigmoid(g_ret)
+                        layer_out = layer_out + ret_gate * qt
+                    elif self.config.use_hololink:
+                        layer_out = layer_out + qt
+
+                    # Residual update of xt for next layer OR next thinking step
+                    xt = xt + layer_out
+
+                    steps_taken += 1
+
+                    # Logic to break loop
+                    if self.config.max_thinking_steps == 0:
+                        break
+
+                    # If using halt logic, we would check here.
+                    # For this implementation, we treat max_thinking_steps as "Extra steps".
+                    # So loop runs max_thinking_steps + 1 times?
+                    # Plan said: "run multiple internal updates... until max_thinking_steps is reached"
+                    # Let's interpret max_thinking_steps as *additional* steps.
+
+                    if steps_taken > self.config.max_thinking_steps:
+                        break
+
                 if return_info and i == 0 and t < 10:
                    stats = {}
                    if track_outputs is not None:
@@ -464,3 +512,9 @@ class ANAModel(nn.Module):
         output_seq = self.norm(output_seq)
         logits = self.output_head(output_seq)
         return logits, info_log
+
+    def forward(self, input_ids, return_info=False, force_prob=0.0):
+        if self.config.use_parallel_scan and self.config.max_thinking_steps == 0:
+             return self.forward_parallel(input_ids, return_info, force_prob)
+        else:
+             return self.forward_sequential(input_ids, return_info, force_prob)

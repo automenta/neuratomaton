@@ -25,3 +25,4 @@ class ANAConfig:
     track_count: int = 2
     use_parallel_scan: bool = False
     force_prob: float = 0.0 # For curriculum learning
+    max_thinking_steps: int = 0
