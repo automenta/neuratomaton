@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from .models import ANAModel
-from .data import AssociativeRecallDataset
+from .data import AssociativeRecallDataset, TextDataset
+from .config import ANAConfig
 import matplotlib.pyplot as plt
 import os
 import json
@@ -85,9 +86,9 @@ def evaluate(model, dataloader, criterion, device):
             
             # Aggregate stats
             for info in info_log:
-                stats['ga_A'].append(info['ga_A'])
-                stats['ga_B'].append(info['ga_B'])
-                stats['ret_gate'].append(info['ret_gate'])
+                if 'ga_A' in info: stats['ga_A'].append(info['ga_A'])
+                if 'ga_B' in info: stats['ga_B'].append(info['ga_B'])
+                if 'ret_gate' in info: stats['ret_gate'].append(info['ret_gate'])
                 
     # Mean stats
     avg_stats = {k: np.mean(v) if v else 0.0 for k, v in stats.items()}
@@ -126,41 +127,34 @@ def col_fn(batch):
     else:
         return torch.stack(xs), torch.stack(ys)
 
-def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Hyperparams
-    VOCAB_SIZE = 40
-    D_MODEL = 64
-    STATE_DIM = 64
-    NUM_LAYERS = 2
-    BATCH_SIZE = 16
-    EPOCHS = 6 # Stage 2A
+def train_stage_2a(config: ANAConfig):
+    print(f"Using device: {config.device}")
     
     # Dataset
     # Noise range 20 to 50
-    dataset = AssociativeRecallDataset(size=2000, vocab_size=VOCAB_SIZE, min_noise=20, max_noise=50)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=col_fn)
+    dataset = AssociativeRecallDataset(size=2000, vocab_size=config.vocab_size, min_noise=20, max_noise=50)
+    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True, collate_fn=col_fn)
     
     # Model: Single Phase 2 ANA
-    model = ANAModel(VOCAB_SIZE, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
+    model = ANAModel(config).to(config.device)
     
     criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+    optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate)
     
     print("Starting Stage 2A: Associative Recall Training...")
     
     history = {'loss': [], 'ga_A': [], 'ga_B': [], 'ret': []}
     
-    for epoch in range(EPOCHS):
-        val_loss, stats = evaluate(model, dataloader, criterion, device) # Pre-eval
-        print(f"Epoch {epoch} (Pre) | Loss: {val_loss:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
+    os.makedirs('archive/results', exist_ok=True)
+
+    for epoch in range(config.epochs):
+        val_loss, stats, acc = evaluate(model, dataloader, criterion, config.device) # Pre-eval
+        print(f"Epoch {epoch} (Pre) | Loss: {val_loss:.4f} | Acc: {acc:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
         
-        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
-        val_loss, stats = evaluate(model, dataloader, criterion, device)
+        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, config.device)
+        val_loss, stats, acc = evaluate(model, dataloader, criterion, config.device)
         
-        print(f"Epoch {epoch+1} | Loss: {val_loss:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
+        print(f"Epoch {epoch+1} | Loss: {val_loss:.4f} | Acc: {acc:.4f} | Gates: A={stats['ga_A']:.2f}, B={stats['ga_B']:.2f}, Ret={stats['ret_gate']:.2f}")
         
         history['loss'].append(val_loss)
         history['ga_A'].append(stats['ga_A'])
@@ -176,17 +170,11 @@ def main():
         
     print("Stage 2A Complete.")
     
-def train_stage_2b():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+def train_stage_2b(config: ANAConfig):
+    print(f"Using device: {config.device}")
     
-    # Hyperparams
-    VOCAB_SIZE_TXT = 256 # Char level
-    D_MODEL = 64
-    STATE_DIM = 64
-    NUM_LAYERS = 2
-    BATCH_SIZE = 32
-    EPOCHS = 4 # Warmup
+    # Config overrides for Text
+    config.vocab_size = 256
     
     # Dataset (Use local files as fallback)
     # Concatenate some files
@@ -196,15 +184,15 @@ def train_stage_2b():
         print("Error: Corpus empty.")
         return
         
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
     
     # Model: New vocab size
-    model = ANAModel(VOCAB_SIZE_TXT, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
+    model = ANAModel(config).to(config.device)
     
     # Load Weights from Stage 2A (Partial)
-    if os.path.exists('model_stage2a.pt'):
+    if os.path.exists('archive/results/model_stage2a.pt'):
         print("Loading Stage 2A weights (Filtering embedding/head)...")
-        state_dict = torch.load('model_stage2a.pt')
+        state_dict = torch.load('archive/results/model_stage2a.pt')
         model_dict = model.state_dict()
         
         # Filter out mismatching keys
@@ -217,54 +205,47 @@ def train_stage_2b():
         
     # Freeze HoloLink? "Train only Tracks and Controller"
     # To freeze HoloLink:
-    for layer in model.layers:
-        for param in layer['holo'].parameters():
-            param.requires_grad = False
+    if config.use_hololink:
+        for layer in model.layers:
+            if 'holo' in layer:
+                for param in layer['holo'].parameters():
+                    param.requires_grad = False
             
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
+    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=config.learning_rate)
     
     print("Starting Stage 2B: Text Warmup (Holo Frozen)...")
     history = {'loss': []}
     
-    for epoch in range(EPOCHS):
-        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
+    for epoch in range(config.epochs):
+        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, config.device)
         print(f"Epoch {epoch+1} | Loss: {train_loss:.4f}")
         history['loss'].append(train_loss)
         
-    with open('results_phase2b.json', 'w') as f:
+    with open('archive/results/results_phase2b.json', 'w') as f:
         json.dump(history, f, indent=2)
 
-def train_stage_3a():
+def train_stage_3a(config: ANAConfig):
     """
     Stage 3A: Associative Recall with Forced Curriculum
     """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Hyperparams
-    VOCAB_SIZE = 40
-    D_MODEL = 64
-    STATE_DIM = 64
-    NUM_LAYERS = 2
-    BATCH_SIZE = 16
-    EPOCHS = 10 # More epochs to allow annealing
+    print(f"Using device: {config.device}")
     
     # Dataset
     # DEBUG: Short noise to verify mechanism
-    dataset = AssociativeRecallDataset(size=2000, vocab_size=VOCAB_SIZE, min_noise=1, max_noise=5)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=col_fn)
+    dataset = AssociativeRecallDataset(size=2000, vocab_size=config.vocab_size, min_noise=1, max_noise=5)
+    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True, collate_fn=col_fn)
     
     # Model
-    model = ANAModel(VOCAB_SIZE, D_MODEL, STATE_DIM, NUM_LAYERS).to(device)
+    model = ANAModel(config).to(config.device)
     
     criterion = nn.CrossEntropyLoss(ignore_index=0, reduction='none')
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+    optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate)
     
     print("Starting Stage 3A: Forced Holo-Link Curriculum...")
     history = {'loss': [], 'force_prob': []}
     
-    for epoch in range(EPOCHS):
+    for epoch in range(config.epochs):
         # Curriculum:
         # Epoch 0-2: Force 100%
         # Epoch 3-5: Anneal 1.0 -> 0.0
@@ -277,27 +258,29 @@ def train_stage_3a():
             force_prob = 0.0
             
         # Training
-        avg_loss = train_one_epoch(model, dataloader, optimizer, criterion, device, force_prob=force_prob)
+        avg_loss = train_one_epoch(model, dataloader, optimizer, criterion, config.device, force_prob=force_prob)
         
         # Eval (without forcing to see if it learned)
-        val_loss, stats, acc = evaluate(model, dataloader, criterion, device)
+        val_loss, stats, acc = evaluate(model, dataloader, criterion, config.device)
         
         print(f"Epoch {epoch+1} | Force: {force_prob:.2f} | Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | Acc: {acc:.4f} | Gates: A={stats['ga_A']:.2f}, Ret={stats['ret_gate']:.2f}")
         
         history['loss'].append(val_loss)
         history['force_prob'].append(force_prob)
 
-    with open('results_phase3a.json', 'w') as f:
+    with open('archive/results/results_phase3a.json', 'w') as f:
         json.dump(history, f, indent=2)
 
 if __name__ == '__main__':
     # Toggle stages
     import sys
+    config = ANAConfig()
+
     if len(sys.argv) > 1:
         if sys.argv[1] == '2b':
-            from data import TextDataset
-            train_stage_2b()
+            train_stage_2b(config)
         elif sys.argv[1] == '3a':
-            train_stage_3a()
+            config.epochs = 10
+            train_stage_3a(config)
     else:
-        main()
+        train_stage_2a(config)
