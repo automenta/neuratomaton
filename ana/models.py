@@ -150,15 +150,23 @@ class HyperController(nn.Module):
     - alpha_k, beta_k for each k in num_tracks
     - gamma_ret (HoloLink Retrieval Gate) if use_hololink
     """
-    def __init__(self, config: ANAConfig, hidden_dim=64):
+    def __init__(self, config: ANAConfig):
         super().__init__()
         self.config = config
-        self.net = nn.Sequential(
-            nn.Linear(config.d_model, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU()
-        )
+
+        hidden_dim = config.controller_hidden_dim
+        layers = []
+
+        # Input layer
+        layers.append(nn.Linear(config.d_model, hidden_dim))
+        layers.append(nn.SiLU()) # Or GELU
+
+        # Hidden layers
+        for _ in range(config.controller_layers - 1):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.SiLU())
+
+        self.net = nn.Sequential(*layers)
 
         # Outputs: 2 per track + 1 for HoloLink (if enabled)
         self.output_dim = config.num_tracks * 2
@@ -200,13 +208,17 @@ class HyperController(nn.Module):
 class HoloLink(nn.Module):
     """
     Associative Memory Module using Matrix Accumulation / Linear Attention.
-    M_t = M_{t-1} + K(h_t) * V(h_t)^T
+    M_t = lambda * M_{t-1} + K(h_t) * V(h_t)^T
     Read = M_t * Q(x_t)
     """
     def __init__(self, config: ANAConfig, input_state_dim, key_dim=64):
         super().__init__()
         self.key_dim = key_dim
         self.d_model = config.d_model
+
+        # Decay factor
+        # If set in config, use it. Default to 1.0 (no decay)
+        self.decay = getattr(config, 'hololink_decay', 1.0)
         
         # Q projection from input
         self.q_proj = nn.Linear(config.d_model, key_dim, bias=False)
@@ -244,10 +256,9 @@ class HoloLink(nn.Module):
         # Outer product: [batch, key, 1] * [batch, 1, val] -> [batch, key, val]
         update = torch.bmm(k_t.unsqueeze(2), v_t.unsqueeze(1))
         
-        # Decay? Standard Linear Attention often has decay.
-        # For strict retrieval, maybe no decay (infinite memory).
-        # Let's keep it simple: No decay.
-        M_t = M_prev + update
+        # Decay logic
+        # M_t = lambda * M_prev + update
+        M_t = self.decay * M_prev + update
         
         # 2. Read: r_t = M_t^T * q_t  (Wait, M maps K->V. Query is in K space. So M * q ?)
         # Dim check: M is [key, val]. q is [key]. Result [val].
@@ -290,7 +301,7 @@ class ANAModel(nn.Module):
 
             if config.use_hololink:
                 modules['holo'] = HoloLink(config, config.state_dim * config.num_tracks)
-            
+
             layer_dict = nn.ModuleDict(modules)
             self.layers.append(layer_dict)
         
@@ -379,7 +390,7 @@ class ANAModel(nn.Module):
         # x is already [batch, seq, dim] embeddings
         batch, seq_len, _ = x.shape
         info_log = []
-        
+
         for i, layer in enumerate(self.layers):
             # 1. Controller (Parallel)
             gates = None

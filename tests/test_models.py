@@ -48,6 +48,23 @@ def test_controller(config):
     # g_ret should be roughly 5.0
     assert torch.allclose(g_ret_forced, torch.ones_like(g_ret_forced) * 5.0, atol=1e-5)
 
+def test_controller_deeper():
+    # Test deeper controller config
+    config = ANAConfig(d_model=32, controller_hidden_dim=16, controller_layers=3)
+    ctl = HyperController(config)
+
+    # Check network depth:
+    # Input -> (Linear, SiLU) -> (Linear, SiLU) -> (Linear, SiLU) -> Head
+    # net should have 2 * 3 = 6 layers?
+    # Original code: input layer (2) + (layers-1)*2 hidden
+    # 2 + 2*2 = 6. Correct.
+
+    assert len(ctl.net) == 2 + (config.controller_layers - 1) * 2
+
+    x = torch.randn(4, 32)
+    gates = ctl(x)
+    assert 'alpha_0' in gates
+
 def test_hololink(config):
     batch_size = 4
     # HoloLink takes concatenated state from 2 tracks
@@ -63,25 +80,28 @@ def test_hololink(config):
     assert retrieved.shape == (batch_size, config.d_model)
     assert m_next.shape == (batch_size, holo.key_dim, config.d_model)
 
+def test_hololink_decay():
+    config = ANAConfig(hololink_decay=0.5)
+    holo = HoloLink(config, input_state_dim=32)
+
+    assert holo.decay == 0.5
+
+    batch_size = 1
+    x = torch.randn(batch_size, config.d_model)
+    h = torch.zeros(batch_size, 32) # Zero input state -> zero update
+
+    # M_prev is all ones
+    M_prev = torch.ones(batch_size, holo.key_dim, config.d_model)
+
+    # Zero update means M_t = 0.5 * M_prev + 0
+    _, M_next = holo(x, h, M_prev)
+
+    assert torch.allclose(M_next, M_prev * 0.5)
+
 def test_hololink_ortho_init():
     config = ANAConfig(orthogonal_init=True)
     holo = HoloLink(config, input_state_dim=32)
-
-    # Orthogonal init property: W^T W = I (approximately for non-square? or square?)
-    # k_proj is Linear(32 -> 64). Not square.
-    # torch.init.orthogonal_ fills tensor with orthogonal matrix.
-    # Check if rows are orthogonal?
-
-    # Just check it runs without error for now as validation of logic path
     assert isinstance(holo.k_proj.weight, torch.Tensor)
-
-    # Also check if config without ortho init produces different weights?
-    config2 = ANAConfig(orthogonal_init=False)
-    holo2 = HoloLink(config2, input_state_dim=32)
-
-    # It's random, so they will be different anyway.
-    # Let's trust torch.init.orthogonal_ works if called.
-    pass
 
 def test_anamodel_forward(config):
     batch_size = 2

@@ -54,6 +54,13 @@ def evaluate(model, dataloader, criterion, device):
     total_loss = 0
     total_correct = 0
     total_samples = 0
+
+    # Specific metric for Associative Recall: "Needle" accuracy
+    # Needle retrieval is usually the LAST token.
+    # We want to know if the model correctly predicted the last token.
+    needle_correct = 0
+    needle_samples = 0
+
     stats = {
         'ga_A': [], 'ga_B': [], 'ret_gate': []
     }
@@ -71,8 +78,6 @@ def evaluate(model, dataloader, criterion, device):
             
             # BaselineSSM returns empty info_log
             if isinstance(model, BaselineSSM):
-                 logits, info_log = model(x), []
-                 # Wait, Baseline forward returns (logits, [])
                  logits, info_log = model(x)
             else:
                  logits, info_log = model(x, return_info=True)
@@ -87,13 +92,20 @@ def evaluate(model, dataloader, criterion, device):
                 
             total_loss += loss.item()
             
-            # Retrieval Accuracy (Last Token)
-            last_logits = logits[:, -1, :] 
-            last_targets = y[:, -1]        
-            preds = torch.argmax(last_logits, dim=-1)
-            correct = (preds == last_targets).float().sum()
-            total_correct += correct.item()
-            total_samples += x.size(0)
+            # General Accuracy (All tokens)
+            preds = torch.argmax(logits, dim=-1) # [batch, seq]
+
+            # If masked, only count masked positions?
+            # Usually strict accuracy is on all tokens.
+            # But let's track "Last Token Accuracy" as the Needle Metric.
+
+            last_pred = preds[:, -1]
+            last_target = y[:, -1]
+            needle_correct += (last_pred == last_target).float().sum().item()
+            needle_samples += x.size(0)
+
+            total_correct += (preds == y).float().sum().item()
+            total_samples += y.numel()
             
             # Aggregate stats
             for info in info_log:
@@ -103,11 +115,14 @@ def evaluate(model, dataloader, criterion, device):
                 
     # Mean stats
     avg_stats = {k: np.mean(v) if v else 0.0 for k, v in stats.items()}
-    if total_samples > 0:
-        acc = total_correct / total_samples
-    else:
-        acc = 0.0
-    return total_loss / len(dataloader), avg_stats, acc
+
+    acc = total_correct / total_samples if total_samples > 0 else 0.0
+    needle_acc = needle_correct / needle_samples if needle_samples > 0 else 0.0
+
+    # Perplexity = exp(loss)
+    ppl = np.exp(total_loss / len(dataloader))
+
+    return total_loss / len(dataloader), avg_stats, acc, needle_acc, ppl
 
 def col_fn(batch):
     # Padding collision
@@ -183,28 +198,34 @@ def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_confi
     optimizer = optim.AdamW(model.parameters(), lr=train_config.learning_rate)
     
     print(f"Starting Stage {train_config.stage} Training...")
-    history = {'loss': [], 'ga_A': [], 'ga_B': [], 'ret': [], 'force_prob': []}
+    history = {'loss': [], 'ppl': [], 'acc': [], 'needle_acc': [], 'ga_A': [], 'ga_B': [], 'ret': [], 'force_prob': []}
     
     for epoch in range(train_config.epochs):
         force_prob = 0.0
-        if train_config.stage == '3a':
-             # Curriculum logic
-            if epoch < 3:
-                force_prob = 1.0
-            elif epoch < 6:
-                force_prob = 1.0 - ((epoch - 2) / 3.0)
-            else:
-                force_prob = 0.0
+
+        # New Curriculum Logic: Linearly decay force_prob over `curriculum_epochs`
+        if train_config.stage == '3a': # 3a is curriculum stage
+             curr_epochs = train_config.curriculum_epochs
+             start_prob = train_config.start_force_prob
+
+             if epoch < curr_epochs:
+                 # Linear decay: prob = start * (1 - epoch/total)
+                 force_prob = start_prob * (1.0 - (epoch / float(curr_epochs)))
+             else:
+                 force_prob = 0.0
 
         # Train
         train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device, force_prob=force_prob)
         
         # Eval
-        val_loss, stats, acc = evaluate(model, dataloader, criterion, device)
+        val_loss, stats, acc, needle_acc, ppl = evaluate(model, dataloader, criterion, device)
 
-        print(f"Epoch {epoch+1} | Force: {force_prob:.2f} | Loss: {val_loss:.4f} | Acc: {acc:.4f} | Gates: A={stats['ga_A']:.2f}, Ret={stats['ret_gate']:.2f}")
+        print(f"Epoch {epoch+1} | Force: {force_prob:.2f} | Loss: {val_loss:.4f} | PPL: {ppl:.2f} | Acc: {acc:.4f} | Needle: {needle_acc:.4f} | Gates: A={stats['ga_A']:.2f}, Ret={stats['ret_gate']:.2f}")
         
         history['loss'].append(val_loss)
+        history['ppl'].append(ppl)
+        history['acc'].append(acc)
+        history['needle_acc'].append(needle_acc)
         history['force_prob'].append(force_prob)
         history['ga_A'].append(stats['ga_A'])
         history['ga_B'].append(stats['ga_B'])
@@ -217,6 +238,8 @@ def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_confi
     with open(f'{train_config.output_dir}/results_stage{train_config.stage}_{model_type}.json', 'w') as f:
         json.dump(history, f, indent=2)
 
+    # Use config flag to avoid saving checkpoints if not desired? No, user said don't commit. Saving locally is fine?
+    # User said "don't commit checkpoints". Saving them locally is standard practice.
     torch.save(model.state_dict(), f'{train_config.output_dir}/model_stage{train_config.stage}_{model_type}.pt')
     print(f"Stage {train_config.stage} Complete.")
 

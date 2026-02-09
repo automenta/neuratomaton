@@ -16,6 +16,9 @@ def main():
     parser.add_argument("--use_controller", type=str, default="True", help="True/False")
     parser.add_argument("--use_parallel_scan", type=str, default="False", help="True/False")
     parser.add_argument("--orthogonal_init", type=str, default="False", help="True/False")
+    parser.add_argument("--controller_hidden_dim", type=int, default=64)
+    parser.add_argument("--controller_layers", type=int, default=2)
+    parser.add_argument("--hololink_decay", type=float, default=1.0)
 
     # Training Config
     parser.add_argument("--batch_size", type=int, default=16)
@@ -26,6 +29,8 @@ def main():
     parser.add_argument("--stage", type=str, default="2a", choices=["2a", "2b", "3a"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model_type", type=str, default="ana", choices=["ana", "baseline"], help="Model type: ana or baseline")
+    parser.add_argument("--curriculum_epochs", type=int, default=5)
+    parser.add_argument("--start_force_prob", type=float, default=1.0)
 
     # Data Config
     parser.add_argument("--dataset_size", type=int, default=2000)
@@ -46,7 +51,10 @@ def main():
         use_hololink=str2bool(args.use_hololink),
         use_controller=str2bool(args.use_controller),
         use_parallel_scan=str2bool(args.use_parallel_scan),
-        orthogonal_init=str2bool(args.orthogonal_init)
+        orthogonal_init=str2bool(args.orthogonal_init),
+        controller_hidden_dim=args.controller_hidden_dim,
+        controller_layers=args.controller_layers,
+        hololink_decay=args.hololink_decay
     )
 
     train_config = TrainingConfig(
@@ -56,14 +64,10 @@ def main():
         device=args.device,
         output_dir=args.output_dir,
         stage=args.stage,
-        seed=args.seed
+        seed=args.seed,
+        curriculum_epochs=args.curriculum_epochs,
+        start_force_prob=args.start_force_prob
     )
-    # Patch train_config to include model_type (it's not in dataclass yet!)
-    # Or just pass it as arg?
-    # Better to add it to TrainingConfig? Or just keep it as local var passed to run_training?
-    # run_training signature: (ana_config, train_config, data_config)
-    # So run_training needs to know model_type.
-    # I can add model_type to TrainingConfig in ana/config.py first.
 
     data_config = DataConfig(
         dataset_size=args.dataset_size,
