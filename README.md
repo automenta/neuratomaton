@@ -1,170 +1,241 @@
 # The Adaptive Neural Automaton (ANA)
-## *A Specification for Algorithmic, Metaprogrammed Language Modeling*
-
-### 1. Executive Overview
-The **Adaptive Neural Automaton (ANA)** is a fundamental re-architecting of the Language Model. It abandons the static, dense matrix multiplications of Transformers for a **dynamic, multi-track computational substrate** driven by algorithmic metaprogramming.
-
-By treating language processing as the evolution of a **Cellular State Machine**, ANA achieves:
-1.  **True $O(N)$ Complexity:** Linear scaling via parallelized associative scans.
-2.  **Infinite Effective Context:** A decoupling of memory size from compute cost via holographic state compression.
-3.  **Algorithmic Plasticity:** The model actively rewrites its transition functions (its "thinking process") in real-time based on the input domain (e.g., switching to "logic-mode" for code, "narrative-mode" for story).
+## *Dynamic Multi-Track State Space Models with Holographic Memory*
 
 ---
 
-### 2. Theoretical Foundation: The Generalized State Equation
+## Research Hypothesis
 
-ANA is built upon a generalization of State Space Models (SSMs). We define the sequence processing not as a lookup, but as the evolution of a hidden state $h_t$ governed by a dynamic transition rule set.
+**Can a multi-track state space model with input-dependent gating and holographic associative memory close the recall gap with Transformers while maintaining O(1) inference?**
 
-$$h_{t} = \text{Evo}\left(h_{t-1}, x_{t}, \Theta_{\text{meta}}(z_t)\right)$$
-
-Where:
-*   $h_t$ is the high-dimensional state vector.
-*   $x_t$ is the input embedding.
-*   $\Theta_{\text{meta}}(z_t)$ is the **Metaprogrammed Parameter Set**, generated dynamically by a controller analyzing the global latent context $z_t$.
+This repository implements ANA - an architecture that combines:
+1. **Multi-Track SSM**: Specialized tracks for different temporal frequencies (syntax, semantics, reasoning)
+2. **Dynamic Gating**: Input-dependent modulation of track behavior via a lightweight HyperController
+3. **HoloLink Memory**: Holographic associative memory for long-range recall without attention
 
 ---
 
-### 3. Core Architecture Specification
+## Why ANA Matters
 
-The ANA consists of three distinct logical layers: **The Substrate (State)**, **The Cortex (Controller)**, and **The Engine (Execution)**.
+### The Recall Problem in Linear Models
 
-#### 3.1 The Multi-Track Substrate (State Representation)
-Instead of a monolithic hidden vector, ANA splits its state $h_t$ into $K$ **Specialized Tracks** running in parallel but with independent evolution rules. This is the structural implementation of metaprogramming.
+State Space Models (Mamba, S4, RWKV) achieve O(1) inference but suffer from the **"Achilles' Heel"**: fixed-size state compression limits recall capacity. When many key-value pairs must be remembered, performance degrades.
 
-*   **Track 1: The Syntactic Tape (High Frequency):** Operates on local n-grams. Fast decay, high sensitivity to token changes. Uses a *Diffusion Kernel*.
-*   **Track 2: The Semantic Net (Low Frequency):** Operates on concepts and entities. Slow decay, integrates information over long horizons. Uses a *Retention Kernel*.
-*   **Track 3: The Logic Scratchpad (Volatile):** A dedicated track for multi-step reasoning (e.g., holding variables for math or code). Uses a *Working-Memory Kernel*.
+| Architecture | Inference | Recall Many Items | Exact Copy | Long Context |
+|--------------|-----------|-------------------|------------|--------------|
+| Transformer | O(N) | ✓ | ✓ | Limited (window) |
+| Mamba/S4 | O(1) | Degrades | Struggles | Degrades beyond training |
+| **ANA** | O(1) | **HoloLink** | **Multi-Track** | **Infinite (decay)** |
 
-**Initialization:** Input tokens are projected and partitioned into these tracks.
+### ANA's Approach
 
-#### 3.2 The Cortical Hyper-Controller (Metaprogrammer)
-This is the "brain" that manages the ANA. It is a lightweight, shallow Transformer network that operates on a **Global Summary Vector** $z$ (updated every $N$ tokens) and the **Current Input**.
+1. **Multi-Track Decomposition**: Different information types (local syntax vs. global semantics) have different optimal decay rates. A single SSM can't optimize both.
 
-**Its Output: The "Instruction Set"**
-The Controller does not process the data; it configures the processor. It generates the parameters for the next evolution step:
+2. **HoloLink as External Memory**: Instead of cramming everything into hidden state, use holographic binding (superposition of key-value pairs) as a separate read/write memory.
 
-1.  **Kernel Weights ($W_{track}$):** Generates specific transition matrices for each track.
-    *   *Innovation:* If the Controller detects a Python block, it forces $W_{Logic}$ to behave like a stack (push/pop). If it detects a story, it forces $W_{Semantic}$ to maximize associative links.
-2.  **Gating Coefficients ($g$):** Determines the "mix" between tracks (e.g., "Listen more to Syntax than Logic right now").
-3.  **Discrete Policy Tokens:** Emits special tokens that trigger sub-routines (e.g., `<RETRIEVE_PAST>`, `<SUMMARIZE>`).
-
-#### 3.3 The Parallel Evolution Engine (Execution)
-The Engine applies the Controller's instructions to the Substrate. To solve the latency problem of Cellular Automata, ANA utilizes **Hardware-Aware Associative Scans**.
-
-**The Update Rule:**
-For each track $k \in \{1..K\}$, we apply a discretized Linear Recurrent Unit:
-
-$$h_t^k = \sigma(A^k_t) \cdot h_{t-1}^k + B^k_t \cdot x_t$$
-
-*   **$A^k_t$ (The Decay Matrix):** Generated by the Controller. Controls the memory horizon of the track.
-*   **$B^k_t$ (The Injection Matrix):** Generated by the Controller. Controls how much new input is accepted.
-*   **$\sigma$:** SiLU activation for smooth gradient flow.
-
-**Parallelization:**
-While this equation looks sequential (RNN), it is mathematically equivalent to a **Parallel Prefix Scan** (Cumulative Sum). We use the `torch associative scan` (or CUDA kernel equivalent) to compute the sequence evolution for the entire context window in $O(\log N)$ steps on GPU, and $O(N)$ on CPU/TPU.
+3. **Dynamic Modulation**: The HyperController learns WHEN to store vs. retrieve, adapting behavior to input complexity.
 
 ---
 
-### 4. The "Holo-Link" Solving the Retrieval Gap
+## Benchmarks & Success Criteria
 
-A known weakness of Linear/RNN models is "associative recall" (finding a specific needle in a haystack). ANA solves this via **Holographic Binding**.
+### Tier 1: Synthetic Tasks (Proof of Concept)
 
-1.  **Random Projection Keys:** As the state $h_t$ evolves, it is projected into a lower-dimensional "Key Space" using a fixed, random Gaussian matrix $R$.
-2.  **Value Binding:** The "Value" is the hidden state $h_t$ itself.
-3.  **Holographic Vector:** The Global Summary $z$ accumulates the sum of these Key-Value pairs: $z_{new} = z_{old} + \text{Key}(h_t) \cdot h_t$.
-4.  **Readout:** To retrieve information relevant to current input $x_t$, we compute the similarity $\text{sim}(Key(x_t), z)$. Because the keys are random vectors, interference is minimal (Johnson-Lindenstrauss lemma), allowing precise retrieval of past states without scanning the whole history.
+| Task | What It Tests | Mamba | Target | ANA Advantage |
+|------|---------------|-------|--------|---------------|
+| **Associative Recall (AR)** | Single KV retrieval | 95%+ | 98%+ | HoloLink recall |
+| **Multi-Query AR (MQAR)** | Many KV pairs (16-256) | Degrades | Stable | HoloLink capacity |
+| **Copy Task** | Exact sequence reproduction | Struggles | 99%+ | Logic track |
+| **Reverse Task** | Sequence manipulation | 60% | 85%+ | Working memory |
+| **Induction Heads** | In-context pattern | 90%+ | 95%+ | Controller gating |
 
----
+### Tier 2: Language Modeling (Validation)
 
+| Metric | Model Size | Mamba | Transformer | ANA Target |
+|--------|------------|-------|-------------|------------|
+| WikiText-103 PPL | 125M | 33.1 | 33.0 | <32.0 |
+| Pile PPL (slice) | 125M | ~11.0 | 9.4 | <10.5 |
+| Throughput (tok/s) | 125M | 50K | 15K | >40K |
 
+### Tier 3: Downstream (Production)
 
-### 5. Dynamic Compute & Training Protocol
-
-#### Adaptive Depth (The "Time-Dilation" Mechanism)
-ANA does not perform a fixed amount of computation per token.
-*   The **Hyper-Controller** predicts a **"Compute Budget"** $c \in [1, 4]$ for the current token.
-*   The Evolution Engine runs $c$ micro-steps of the CA update for that token.
-*   **Result:** Simple tokens (like "the", "and") are processed in 1 step. Complex reasoning tokens (like "therefore", "implies") trigger 4 steps of deep simulation. This drastically increases efficiency without loss of performance.
-
-#### Training Strategy: Curriculum Stability
-1.  **Phase 1 (Static Physics):** Freeze the Hyper-Controller. Initialize $A^k$ and $B^k$ to standard values (e.g., S4 or Mamba initialization). Train the Input/Output embeddings to maximize $L_{LM}$. This creates a stable, functioning CA.
-2.  **Phase 2 (Unlocking the Cortex):** Unfreeze the Hyper-Controller. Use a small learning rate. Introduce a **KL-Divergence Loss** between the Controller's output and a "prior distribution" (Gaussian). This prevents the Controller from generating chaotic rules that explode the gradients.
-3.  **Phase 3 (Track Specialization):** Add auxiliary losses. For example, force the "Logic Track" to improve performance on arithmetic datasets, and the "Semantic Track" on summarization datasets. This encourages the tracks to diverge and specialize.
-
----
-
-### 6. Performance Summary
-
-| Metric | Transformer | Mamba (SSM) | **ANA (Proposed)** |
-| :--- | :--- | :--- | :--- |
-| **Context Length** | Finite (Windowed) | Infinite (Recall decay) | **Infinite (Holo-Link)** |
-| **Inference Speed** | $O(N)$ (Decode) | $O(1)$ (Decode) | $O(1)$ (Dynamic) |
-| **Training Speed** | Slow (Memory bound) | Fast (Parallel Scan) | **Fast (Parallel Scan)** |
-| **Reasoning** | Strong (Attention) | Weak (Heuristic) | **Strong (Logic Track)** |
-| **Adaptability** | Static (Fine-tune only) | Static | **Metaprogrammed (Real-time)** |
-
-### 7. Why ANA Wins
-The Adaptive Neural Automaton represents the shift from **"Static Weights"** to **"Dynamic Algorithms"**. By separating the state into specialized tracks and governed by a hyper-network that understands the *nature* of the task, ANA achieves the density of human cognition: fast, reflexive processing for most inputs, but capable of switching into deep, slow, logical reasoning when the metaprogram detects the need.
-
-Yes, this is absolutely worth experimenting with, but it falls into the **"High Risk, High Reward"** category of research.
-
-It is not a speculative "moonshot" (like trying to invent a new fundamental physics); it is grounded in proven components (State Space Models, Associative Scans) combined with a novel, unstable control mechanism (Metaprogrammed Weights).
+| Benchmark | 1.4B Model | Target |
+|-----------|------------|--------|
+| MMLU | 35-40% | >38% |
+| HellaSwag | 50-55% | >52% |
+| PIQA | 75-78% | >76% |
 
 ---
 
-### 8. Project Structure
-
-```
-ana/
-├── ana/                 # Source code package
-│   ├── __init__.py
-│   ├── models.py        # ANAModel, HoloLink, LRU definitions
-│   ├── train.py         # Training scripts (Stage 2A, 2B, 3A)
-│   └── data.py          # Dataset classes
-├── data/                # Data storage
-│   └── corpus.txt
-├── docs/                # Documentation and assets
-│   └── images/
-├── archive/             # Archived logs and results
-│   ├── results/
-│   ├── logs/
-│   └── ana_1/           # Legacy prototype
-└── README.md
-```
-
-### 9. Usage
-
-To run the training stages:
+## Quick Start
 
 ```bash
-# Stage 2A: Associative Recall Training (Default)
-python3 -m ana.train
+# Install dependencies
+pip install torch numpy matplotlib tensorboard pytest
 
-# Stage 2B: Text Warmup
-python3 -m ana.train 2b
+# Run all tests (45 tests)
+python -m pytest tests/ -v
 
-# Stage 3A: Forced Holo-Link Curriculum
-python3 -m ana.train 3a
+# Train Stage 1: Associative Recall baseline
+python run_experiment.py train 2a --epochs 10
+
+# Train Stage 2: Text warmup
+python run_experiment.py train 2b --parallel --epochs 5
+
+# Train Stage 3: HoloLink curriculum
+python run_experiment.py train 3a --thinking-steps 2 --epochs 15
+
+# Evaluate
+python run_experiment.py eval --checkpoint archive/results/model_stage3a_ana.pt
+
+# Benchmark performance
+python run_experiment.py benchmark
 ```
 
-### 10. Research Potentials & Next Steps
+---
 
-Based on the initial validation phases, here are the recommended directions:
+## Architecture
 
-1.  **Holo-Link Stabilization**: The holographic binding mechanism shows promise but requires careful tuning of the projection matrices (`key_proj`). Initial experiments suggest orthogonal initialization helps.
-2.  **Curriculum Learning**: Phase 3A demonstrated that a forced curriculum (hard-coding the retrieval gate initially) helps the model "discover" the utility of the Holo-Link. Expanding this to more complex tasks is a key next step.
-3.  **Scale-up**: The current prototype is tiny (64d state). Scaling to standard sizes (512d - 1024d) will likely reveal more stable dynamics, as the "Johnson-Lindenstrauss" properties of random projections improve with dimension.
-4.  **Hardware Efficiency**: Implementing the Associative Scan in a custom CUDA kernel or using `mamba-ssm` kernels (if adaptable) would be necessary for large-scale training.
+```
+Input Token
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│                    ANA Layer                            │
+│  ┌─────────────┐                                       │
+│  │ Controller  │──► alpha_A, beta_A, alpha_B, beta_B   │
+│  │ (tiny MLP)  │──► mix_A, mix_B, ret_gate, halt       │
+│  └─────────────┘                                       │
+│         │                                              │
+│    ┌────┴────┐                                         │
+│    ▼         ▼                                         │
+│ ┌──────┐  ┌──────┐    Parallel LRU Tracks              │
+│ │Track │  │Track │    h_t = α·h_{t-1} + β·x_t          │
+│ │  A   │  │  B   │                                     │
+│ │(Fast)│  │(Slow)│                                     │
+│ └──┬───┘  └───┬──┘                                     │
+│    │          │                                        │
+│    └────┬─────┘                                        │
+│         ▼                                              │
+│  ┌─────────────┐                                       │
+│  │  HoloLink   │    M_t = M_{t-1} + K(h)·V(h)^T       │
+│  │ (Linear Attn)│   retrieve = M_t · Q(x)             │
+│  └──────┬──────┘                                       │
+│         │                                              │
+│    Mix + Residual                                      │
+└─────────┼───────────────────────────────────────────────┘
+          ▼
+      Next Layer
+```
 
-### 11. Final Verdict
+---
 
-**Recommendation: Proceed, but Decouple.**
+## Research Roadmap
 
-The **ANA** architecture is 90% a solid Linear RNN (SSM) and 10% a risky Metaprogramming experiment.
-*   If the Metaprogramming fails, you strip it out and you still have a **Multi-Track SSM** (which is likely better than Mamba due to modularity).
-*   If the Metaprogramming works, you have a breakthrough.
+### Phase 1: Baseline Validation (Current)
+- [x] Core architecture implementation
+- [x] Training pipeline with curriculum
+- [x] Synthetic task evaluation (AR, Copy, Reverse)
+- [ ] **Next**: Scale to 125M params, compare with BaselineSSM
 
-**Strategy for Success:**
-Start by implementing the **Multi-Track SSM** with **Static Weights**. Get that performing better than Mamba. *Then*, introduce the Hyper-Controller as a fine-tuning step or a "low-rank adapter." Do not try to learn the physics from scratch; learn to *modulate* pre-trained physics.
+### Phase 2: HoloLink Optimization
+- [ ] Ablation: HoloLink vs. no HoloLink on MQAR
+- [ ] Key dimension scaling study (32 → 256)
+- [ ] Orthogonal vs. learned projections
+- [ ] Decay scheduling experiments
 
-This is absolutely worth the experiment. The "thinking vs. remembering" separation is the key to General Intelligence, and ANA is the closest architectural approximation to that concept I have seen.
+### Phase 3: Controller Refinement
+- [ ] Controller depth study (1-4 layers)
+- [ ] ACT (Adaptive Computation Time) integration
+- [ ] Curriculum strategies for controller
+- [ ] Regularization (KL divergence to prior)
+
+### Phase 4: Scaling & Efficiency
+- [ ] 70M → 360M → 1.4B parameter sweep
+- [ ] Custom CUDA kernels for parallel scan
+- [ ] Memory profiling and optimization
+- [ ] Mixed precision training (FP16/BF16)
+
+### Phase 5: Real-World Validation
+- [ ] Pretrain on Pile (10B tokens minimum)
+- [ ] WikiText-103 benchmark
+- [ ] Long-context evaluation (4K→32K tokens)
+- [ ] Zero-shot downstream (MMLU, HellaSwag)
+
+---
+
+## Key Research Questions
+
+1. **HoloLink Capacity**: What is the effective memory capacity of holographic binding? How many KV pairs can be stored before interference degrades recall?
+
+2. **Track Specialization**: Do tracks naturally specialize (syntax vs. semantics) or must they be forced via auxiliary losses?
+
+3. **Controller Necessity**: Is dynamic gating essential, or can static per-track parameters achieve similar performance?
+
+4. **Extrapolation**: How does ANA perform on sequences 2×, 4×, 8× longer than training?
+
+5. **Efficiency Trade-offs**: Where is the sweet spot between state dimension, key dimension, and compute?
+
+---
+
+## Ablation Studies
+
+Run systematic ablations:
+
+```bash
+# No HoloLink
+python run_experiment.py train 3a --no-hololink
+
+# No Controller (static tracks only)
+python run_experiment.py train 3a --no-controller
+
+# Single track
+python run_experiment.py train 3a --tracks 1
+
+# Four tracks
+python run_experiment.py train 3a --tracks 4
+
+# Thinking steps
+python run_experiment.py train 3a --thinking-steps 4
+```
+
+---
+
+## Comparison with State of the Art
+
+| Architecture | Params | WikiText PPL | AR Accuracy | MQAR (64 pairs) | Inference |
+|--------------|--------|--------------|-------------|-----------------|-----------|
+| Transformer | 125M | 33.0 | 99% | 99% | O(N) KV cache |
+| Mamba | 130M | 33.1 | 95% | 72% | O(1) state |
+| RWKV-4 | 125M | 34.0 | 93% | 68% | O(1) state |
+| **ANA (target)** | 125M | <32.0 | 98% | 90% | O(1) state |
+
+*Note: ANA results pending proper scale-up experiments*
+
+---
+
+## Contributing
+
+Key areas for contribution:
+1. **CUDA kernels**: Efficient parallel scan implementation
+2. **Evaluation**: Additional downstream benchmarks
+3. **Architecture**: Novel track types, controller designs
+4. **Theory**: Capacity analysis of HoloLink memory
+
+---
+
+## Citation
+
+```bibtex
+@software{ana2024,
+  title = {Adaptive Neural Automaton: Multi-Track SSM with Holographic Memory},
+  author = {ANA Research Team},
+  year = {2024},
+  url = {https://github.com/automenta/neuratomaton}
+}
+```
+
+---
+
+## License
+
+MIT License - See LICENSE file for details.
