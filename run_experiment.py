@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--use_hololink", type=str, default="True", help="True/False")
     parser.add_argument("--use_controller", type=str, default="True", help="True/False")
     parser.add_argument("--use_parallel_scan", type=str, default="False", help="True/False")
+    parser.add_argument("--orthogonal_init", type=str, default="False", help="True/False")
 
     # Training Config
     parser.add_argument("--batch_size", type=int, default=16)
@@ -24,6 +25,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="archive/results")
     parser.add_argument("--stage", type=str, default="2a", choices=["2a", "2b", "3a"])
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--model_type", type=str, default="ana", choices=["ana", "baseline"], help="Model type: ana or baseline")
 
     # Data Config
     parser.add_argument("--dataset_size", type=int, default=2000)
@@ -43,7 +45,8 @@ def main():
         num_tracks=args.num_tracks,
         use_hololink=str2bool(args.use_hololink),
         use_controller=str2bool(args.use_controller),
-        use_parallel_scan=str2bool(args.use_parallel_scan)
+        use_parallel_scan=str2bool(args.use_parallel_scan),
+        orthogonal_init=str2bool(args.orthogonal_init)
     )
 
     train_config = TrainingConfig(
@@ -55,6 +58,12 @@ def main():
         stage=args.stage,
         seed=args.seed
     )
+    # Patch train_config to include model_type (it's not in dataclass yet!)
+    # Or just pass it as arg?
+    # Better to add it to TrainingConfig? Or just keep it as local var passed to run_training?
+    # run_training signature: (ana_config, train_config, data_config)
+    # So run_training needs to know model_type.
+    # I can add model_type to TrainingConfig in ana/config.py first.
 
     data_config = DataConfig(
         dataset_size=args.dataset_size,
@@ -65,9 +74,10 @@ def main():
     print("Running Experiment with Config:")
     print(ana_config)
     print(train_config)
+    print(f"Model Type: {args.model_type}")
     print(data_config)
 
-    run_training(ana_config, train_config, data_config)
+    run_training(ana_config, train_config, data_config, model_type=args.model_type)
 
 if __name__ == "__main__":
     main()

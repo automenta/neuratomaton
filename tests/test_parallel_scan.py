@@ -1,6 +1,7 @@
 
 import pytest
 import torch
+import torch.nn.functional as F
 from ana.models import parallel_scan_lru
 
 def test_parallel_scan_correctness():
@@ -10,13 +11,16 @@ def test_parallel_scan_correctness():
 
     # Random inputs
     u = torch.randn(batch_size, seq_len, dim)
-    # Alpha in (0, 1)
-    alpha = torch.sigmoid(torch.randn(batch_size, seq_len, dim))
+    # Logits for alpha
+    alpha_logits = torch.randn(batch_size, seq_len, dim)
+    alpha = torch.sigmoid(alpha_logits)
+    log_alpha = F.logsigmoid(alpha_logits)
+
     # Beta in (0, 1)
     beta = torch.sigmoid(torch.randn(batch_size, seq_len, dim))
 
     # 1. Parallel Scan
-    h_parallel = parallel_scan_lru(u, alpha, beta)
+    h_parallel = parallel_scan_lru(u, log_alpha, beta)
 
     # 2. Sequential Scan
     h_seq_list = []
@@ -31,7 +35,6 @@ def test_parallel_scan_correctness():
     h_sequential = torch.stack(h_seq_list, dim=1)
 
     # Compare
-    # Tolerance might need to be relaxed due to exp(cumsum) vs iterative mul
     diff = (h_parallel - h_sequential).abs().max()
     print(f"Max difference: {diff.item()}")
 

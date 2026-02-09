@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import math
 from .config import ANAConfig
 
-def parallel_scan_lru(u, alpha, beta):
+def parallel_scan_lru(u, log_alpha, beta):
     """
     Parallel implementation of Linear Recurrence:
     h_t = alpha_t * h_{t-1} + beta_t * u_t
@@ -15,18 +15,16 @@ def parallel_scan_lru(u, alpha, beta):
 
     Args:
         u: [batch, seq, dim]
-        alpha: [batch, seq, dim]
+        log_alpha: [batch, seq, dim] (Log space alpha)
         beta: [batch, seq, dim]
     Returns:
         h: [batch, seq, dim]
     """
-    # 1. Compute log alpha (Use float64 for stability)
-    log_alpha = torch.log(alpha.to(torch.float64) + 1e-8) # Avoid log(0)
-
     # 2. Cumulative sum of log alpha
     # C_t = sum_{i=0}^t log(alpha_i)
     # Note: Sequence dimension is 1
-    C = torch.cumsum(log_alpha, dim=1)
+    # Use float64 for accumulation stability
+    C = torch.cumsum(log_alpha.to(torch.float64), dim=1)
 
     # 3. Compute the term to be accumulated
     # term = beta * u * exp(-C)
@@ -39,7 +37,7 @@ def parallel_scan_lru(u, alpha, beta):
     # 5. Final result
     h = torch.exp(C) * S
 
-    return h.to(alpha.dtype)
+    return h.to(u.dtype)
 
 class LinearRecurrentUnit(nn.Module):
     """
@@ -114,27 +112,34 @@ class LinearRecurrentUnit(nn.Module):
         batch, seq, _ = x.shape
         u = self.input_proj(x) # [batch, seq, state_dim]
 
+        # Calculate logits first
+        static_alpha = self.static_alpha_logit.view(1, 1, -1)
+        static_beta = self.static_beta_logit.view(1, 1, -1)
+
         if dynamic_gates is not None:
             gate_alpha, gate_beta = dynamic_gates
             # gate_alpha: [batch, seq, state_dim]
-
-            # Broadcast static logits: [state_dim] -> [1, 1, state_dim]
-            static_alpha = self.static_alpha_logit.view(1, 1, -1)
-            static_beta = self.static_beta_logit.view(1, 1, -1)
-
-            alpha = torch.sigmoid(static_alpha + gate_alpha)
-            beta = torch.sigmoid(static_beta + gate_beta)
+            logits_alpha = static_alpha + gate_alpha
+            logits_beta = static_beta + gate_beta
         else:
-            static_alpha = self.static_alpha_logit.view(1, 1, -1)
-            static_beta = self.static_beta_logit.view(1, 1, -1)
-            alpha = torch.sigmoid(static_alpha).expand(batch, seq, self.state_dim)
-            beta = torch.sigmoid(static_beta).expand(batch, seq, self.state_dim)
+            logits_alpha = static_alpha.expand(batch, seq, self.state_dim)
+            logits_beta = static_beta.expand(batch, seq, self.state_dim)
 
-        # Parallel Scan
-        h = parallel_scan_lru(u, alpha, beta)
+        # Use logsigmoid for alpha
+        log_alpha = F.logsigmoid(logits_alpha)
+        # Regular sigmoid for beta
+        beta = torch.sigmoid(logits_beta)
+
+        # Parallel Scan (takes log_alpha)
+        h = parallel_scan_lru(u, log_alpha, beta)
 
         # Output proj
         y = self.output_proj(h)
+
+        # For compatibility with sequential return (gates), we can reconstruct alpha if needed
+        # But usually we just need it for logging.
+        # Let's return alpha (sigmoid) for logging purposes.
+        alpha = torch.sigmoid(logits_alpha)
 
         return y, h, (alpha, beta) # Return FULL state and gates
 
@@ -208,6 +213,10 @@ class HoloLink(nn.Module):
         
         # K projection from state (Learned)
         self.k_proj = nn.Linear(input_state_dim, key_dim, bias=False)
+
+        # Orthogonal Initialization if enabled
+        if hasattr(config, 'orthogonal_init') and config.orthogonal_init:
+            nn.init.orthogonal_(self.k_proj.weight)
         
         # V projection from state (Learned)
         self.v_proj = nn.Linear(input_state_dim, config.d_model, bias=False)

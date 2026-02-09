@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from .models import ANAModel
+from .models import ANAModel, BaselineSSM
 from .data import AssociativeRecallDataset, TextDataset
 from .config import ANAConfig, TrainingConfig, DataConfig
 import matplotlib.pyplot as plt
@@ -26,7 +26,12 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, force_prob=
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         
-        logits, _ = model(x, force_prob=force_prob)
+        # Check if model supports force_prob
+        # BaselineSSM doesn't have force_prob arg in forward
+        if isinstance(model, BaselineSSM):
+            logits, _ = model(x)
+        else:
+            logits, _ = model(x, force_prob=force_prob)
         
         loss_raw = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
         loss_raw = loss_raw.view(y.size())
@@ -64,7 +69,13 @@ def evaluate(model, dataloader, criterion, device):
                 
             x, y = x.to(device), y.to(device)
             
-            logits, info_log = model(x, return_info=True)
+            # BaselineSSM returns empty info_log
+            if isinstance(model, BaselineSSM):
+                 logits, info_log = model(x), []
+                 # Wait, Baseline forward returns (logits, [])
+                 logits, info_log = model(x)
+            else:
+                 logits, info_log = model(x, return_info=True)
             
             loss_raw = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
             loss_raw = loss_raw.view(y.size())
@@ -130,7 +141,7 @@ def col_fn(batch):
     else:
         return torch.stack(xs), torch.stack(ys)
 
-def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_config: DataConfig):
+def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_config: DataConfig, model_type="ana"):
     device = torch.device(train_config.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -157,7 +168,12 @@ def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_confi
         # Update model vocab size for text
         ana_config.vocab_size = 256
 
-    model = ANAModel(ana_config).to(device)
+    if model_type == "baseline":
+        print("Initializing BaselineSSM...")
+        model = BaselineSSM(ana_config).to(device)
+    else:
+        print("Initializing ANAModel...")
+        model = ANAModel(ana_config).to(device)
     
     # Load weights if needed (e.g. for 2b or 3a continuation)
     # Simple logic: if model file exists from previous stage, try load?
@@ -179,7 +195,7 @@ def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_confi
                 force_prob = 1.0 - ((epoch - 2) / 3.0)
             else:
                 force_prob = 0.0
-        
+
         # Train
         train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device, force_prob=force_prob)
         
@@ -198,10 +214,10 @@ def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_confi
     if not os.path.exists(train_config.output_dir):
         os.makedirs(train_config.output_dir)
         
-    with open(f'{train_config.output_dir}/results_stage{train_config.stage}.json', 'w') as f:
+    with open(f'{train_config.output_dir}/results_stage{train_config.stage}_{model_type}.json', 'w') as f:
         json.dump(history, f, indent=2)
 
-    torch.save(model.state_dict(), f'{train_config.output_dir}/model_stage{train_config.stage}.pt')
+    torch.save(model.state_dict(), f'{train_config.output_dir}/model_stage{train_config.stage}_{model_type}.pt')
     print(f"Stage {train_config.stage} Complete.")
 
 def main():

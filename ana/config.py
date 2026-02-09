@@ -11,6 +11,7 @@ class ANAConfig:
     use_hololink: bool = True
     use_controller: bool = True
     use_parallel_scan: bool = False
+    orthogonal_init: bool = False
     dropout: float = 0.1
 
 @dataclass
