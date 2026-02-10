@@ -153,14 +153,15 @@ class BioHoloLink(nn.Module):
         h: torch.Tensor,
         write_mode: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        retrieved, info = self.memory(h, write_mode=write_mode)
+        mem_output, mem_info = self.memory(h, write_mode=write_mode)
         
-        combined = torch.cat([h, retrieved], dim=-1)
+        retrieved_key = mem_info['retrieved']
+        combined = torch.cat([h, retrieved_key], dim=-1)
         gate_weight = torch.sigmoid(self.gate(combined))
         
-        output = self.norm(h + gate_weight * self.memory.output_proj(retrieved))
+        output = self.norm(h + gate_weight * mem_output)
         
-        return output, info
+        return output, mem_info
     
     def get_memory_stats(self) -> Dict[str, float]:
         return self.memory.get_memory_stats()

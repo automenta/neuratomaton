@@ -79,9 +79,8 @@ def train_epoch(model, dataloader, optimizer, device):
         target_ids = target_ids.to(device)
         
         optimizer.zero_grad()
-        logits = model(input_ids)
+        logits = model(input_ids, relaxation_steps=7)
         
-        # Reshape for loss calculation
         B, T, V = logits.shape
         loss = F.cross_entropy(
             logits.view(-1, V),
@@ -108,7 +107,7 @@ def evaluate(model, dataloader, device):
         input_ids = input_ids.to(device)
         target_ids = target_ids.to(device)
         
-        logits = model(input_ids)
+        logits = model(input_ids, relaxation_steps=7)
         
         B, T, V = logits.shape
         loss = F.cross_entropy(
@@ -289,9 +288,9 @@ if __name__ == '__main__':
                         help='Vocabulary size')
     parser.add_argument('--seq-len', type=int, default=128,
                         help='Sequence length')
-    parser.add_argument('--batch-size', type=int, default=8,
+    parser.add_argument('--batch-size', type=int, default=32,
                         help='Batch size')
-    parser.add_argument('--epochs', type=int, default=3,
+    parser.add_argument('--epochs', type=int, default=5,
                         help='Number of epochs')
     parser.add_argument('--lr', type=float, default=1e-3,
                         help='Learning rate')
