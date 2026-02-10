@@ -83,9 +83,13 @@ class MetaStateStack(nn.Module):
     def forward(self, x, fault_summary, stack, return_opcodes=False):
         batch_size = x.size(0)
         
-        top_vector = torch.zeros(batch_size, self.stack_dim, device=x.device)
+        top_vector = x.new_zeros(batch_size, self.stack_dim)
         
-        combined = torch.cat([x, top_vector, fault_summary], dim=-1)
+        fault_summary_expanded = fault_summary
+        if fault_summary.size(0) != batch_size:
+            fault_summary_expanded = fault_summary.expand(batch_size, -1)
+        
+        combined = torch.cat([x, top_vector, fault_summary_expanded], dim=-1)
         delta = self.delta_proj(combined)
         opcode_logits = self.opcode_head(combined)
         
@@ -142,19 +146,49 @@ def parallel_scan_hillis_steele_v2(u, alpha, beta, h_init):
     
     if n > seq:
         pad = n - seq
+        alpha_pad = u.new_ones(batch, pad, dim)
+        beta_pad = u.new_zeros(batch, pad, dim)
+        u_pad = u.new_zeros(batch, pad, dim)
+        alpha = torch.cat([alpha, alpha_pad], dim=1)
+        beta = torch.cat([beta, beta_pad], dim=1)
+        u = torch.cat([u, u_pad], dim=1)
+        curr_a = alpha.clone()
+        curr_b = beta.clone()
+    else:
+        curr_a = alpha.clone()
+        curr_b = beta.clone()
+    
+    log_n = int(math.log2(n))
+    
+    for i in range(log_n):
+        d = 1 << i
+        a_shifted = torch.cat([u.new_ones(batch, d, dim), curr_a[:, :-d]], dim=1)
+        b_shifted = torch.cat([u.new_zeros(batch, d, dim), curr_b[:, :-d]], dim=1)
+        next_a = curr_a * a_shifted
+        next_b = curr_a * b_shifted + curr_b
+        curr_a = next_a
+        curr_b = next_b
+    
+    h = curr_a[:, :seq] * h_init.unsqueeze(1) + curr_b[:, :seq]
+    return h
+    
+    n = 1 << (seq - 1).bit_length()
+    
+    if n > seq:
+        pad = n - seq
         alpha_pad = torch.ones(batch, pad, dim, device=u.device, dtype=u.dtype)
         beta_pad = torch.zeros(batch, pad, dim, device=u.device, dtype=u.dtype)
         u_pad = torch.zeros(batch, pad, dim, device=u.device, dtype=u.dtype)
         alpha = torch.cat([alpha, alpha_pad], dim=1)
         beta = torch.cat([beta, beta_pad], dim=1)
         u = torch.cat([u, u_pad], dim=1)
+        curr_a = alpha.clone()
+        curr_b = beta.clone()
+        curr_u = u.clone()
     else:
-        alpha = alpha.clone()
-        beta = beta.clone()
-        u = u.clone()
-    
-    curr_a = alpha
-    curr_b = beta * u
+        curr_a = alpha.clone()
+        curr_b = beta.clone()
+        curr_u = u.clone()
     
     log_n = int(math.log2(n))
     
@@ -192,7 +226,7 @@ class LinearRecurrentTrack(nn.Module):
     def _step(self, x, h_prev, alpha_mod, beta_mod):
         batch = x.size(0)
         if h_prev is None:
-            h_prev = torch.zeros(batch, self.state_dim, device=x.device)
+            h_prev = x.new_zeros(batch, self.state_dim)
         
         u = self.input_proj(x)
         
@@ -215,7 +249,7 @@ class LinearRecurrentTrack(nn.Module):
         alpha = torch.sigmoid(self.alpha_logit).view(1, 1, -1).expand(batch, seq, -1)
         beta = torch.sigmoid(self.beta_logit).view(1, 1, -1).expand(batch, seq, -1)
         
-        h_init = torch.zeros(batch, self.state_dim, device=x.device)
+        h_init = x.new_zeros(batch, self.state_dim)
         h = parallel_scan_hillis_steele_v2(u, alpha, beta, h_init)
         y = self.output_proj(h)
         return y, h
@@ -356,7 +390,11 @@ class CortexController(nn.Module):
     def forward(self, x, top_stack, fault_summary):
         batch_size = x.size(0)
         
-        combined = torch.cat([x, top_stack, fault_summary], dim=-1)
+        fault_summary_expanded = fault_summary
+        if fault_summary.size(0) != batch_size:
+            fault_summary_expanded = fault_summary.expand(batch_size, -1)
+        
+        combined = torch.cat([x, top_stack, fault_summary_expanded], dim=-1)
         features = self.net(combined)
         
         opcode_logits = self.opcode_head(features)
@@ -396,10 +434,7 @@ class SpecializedTracks(nn.Module):
             alpha_mods[2] if alpha_mods else None,
             beta_mods[2] if beta_mods else None)
         
-        if x.dim() == 3:
-            outputs = torch.cat([y_syntax, y_semantic, y_logic], dim=-1)
-        else:
-            outputs = torch.cat([y_syntax, y_semantic, y_logic], dim=-1)
+        outputs = torch.cat([y_syntax, y_semantic, y_logic], dim=-1)
         
         states = {
             'syntax': h_syntax,

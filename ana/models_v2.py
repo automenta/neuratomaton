@@ -221,11 +221,6 @@ class ANAModelV2(nn.Module):
         if config.use_controller:
             self.controller = HyperController(config)
         
-        # Mixing layers
-        self.track_mix = nn.Linear(config.track_count, 1)
-        self.memory_mix = nn.Linear(config.d_model * 2, config.d_model)
-        self.attn_mix = nn.Linear(config.d_model * 2, config.d_model)
-        
         self.norm = nn.LayerNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size)
         

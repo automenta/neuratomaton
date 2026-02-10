@@ -12,6 +12,9 @@ import json
 import numpy as np
 import time
 
+if torch.cuda.is_available():
+    from torch.cuda.amp import autocast, GradScaler
+
 
 def col_fn(batch):
     has_mask = len(batch[0]) == 3
@@ -27,10 +30,10 @@ def col_fn(batch):
         
         pad = max_len - x.size(0)
         if pad > 0:
-            x = torch.cat([x, torch.zeros(pad, dtype=torch.long)])
-            y = torch.cat([y, torch.zeros(pad, dtype=torch.long)])
+            x = F.pad(x, (0, pad), value=0)
+            y = F.pad(y, (0, pad), value=0)
             if mask is not None:
-                mask = torch.cat([mask, torch.zeros(pad, dtype=torch.float)])
+                mask = F.pad(mask, (0, pad), value=0)
         
         xs.append(x)
         ys.append(y)
@@ -58,6 +61,11 @@ class TrainerV2:
         
         total_params = sum(p.numel() for p in self.model.parameters())
         print(f"Model initialized with {total_params:,} parameters")
+        
+        self.use_amp = torch.cuda.is_available() and self.train_config.use_mixed_precision
+        self.scaler = GradScaler() if self.use_amp else None
+        if self.use_amp:
+            print("Mixed precision training enabled")
         
     def get_device(self):
         return self.device
@@ -161,21 +169,36 @@ class TrainerV2:
             optimizer.zero_grad()
             
             if self.config.use_parallel_scan and stage != '2':
-                logits, rule_logits = self.model.forward_parallel(x)
+                with autocast(enabled=self.use_amp):
+                    logits, rule_logits = self.model.forward_parallel(x)
+                    loss_dict = self.model.compute_loss(logits, rule_logits, y)
+                    loss = loss_dict['total']
+                    
+                    if mask is not None:
+                        ce_per_pos = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=0, reduction='none')
+                        ce_per_pos = ce_per_pos.view(y.size())
+                        loss = (ce_per_pos * mask).sum() / mask.sum()
             else:
-                logits, rule_logits, info = self.model(x, return_info=True)
+                with autocast(enabled=self.use_amp):
+                    logits, rule_logits, info = self.model(x, return_info=True)
+                    loss_dict = self.model.compute_loss(logits, rule_logits, y)
+                    loss = loss_dict['total']
+                    
+                    if mask is not None:
+                        ce_per_pos = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=0, reduction='none')
+                        ce_per_pos = ce_per_pos.view(y.size())
+                        loss = (ce_per_pos * mask).sum() / mask.sum()
             
-            loss_dict = self.model.compute_loss(logits, rule_logits, y)
-            loss = loss_dict['total']
-            
-            if mask is not None:
-                ce_per_pos = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=0, reduction='none')
-                ce_per_pos = ce_per_pos.view(y.size())
-                loss = (ce_per_pos * mask).sum() / mask.sum()
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.train_config.grad_clip)
-            optimizer.step()
+            if self.use_amp:
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.train_config.grad_clip)
+                self.scaler.step(optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.train_config.grad_clip)
+                optimizer.step()
             
             total_loss += loss.item()
             total_ce += loss_dict['ce'].item()
@@ -416,6 +439,3 @@ class TrainerV2:
         print(f"\nFull curriculum complete. Results saved to {combined_path}")
         
         return all_results
-
-
-import torch.nn.functional as F

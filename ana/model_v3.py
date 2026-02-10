@@ -92,7 +92,9 @@ class ANAv2Model(nn.Module):
         stack_list = self._initialize_stack(batch_size)
         track_states = self._initialize_track_states(batch_size)
         
-        fault_summary = self.fault_buffer.get_summary().expand(batch_size, -1)
+        fault_summary = self.fault_buffer.get_summary()
+        if fault_summary.size(0) != batch_size:
+            fault_summary = fault_summary.expand(batch_size, -1)
         
         outputs = []
         all_info = []
@@ -101,7 +103,7 @@ class ANAv2Model(nn.Module):
         for t in range(seq_len):
             xt = x[:, t, :]
             
-            top_stack_vec = torch.zeros(batch_size, self.config.stack_dim, device=device)
+            top_stack_vec = torch.zeros(batch_size, self.config.stack_dim, dtype=x.dtype, device=device)
             
             cortex_out = self.cortex(xt, top_stack_vec, fault_summary)
             
@@ -158,10 +160,7 @@ class ANAv2Model(nn.Module):
         
         rule_loss = F.cross_entropy(rule_logits.view(-1, 2), torch.zeros(batch * seq, dtype=torch.long, device=logits.device))
         
-        density_reg = 0.0
-        for name, param in self.named_parameters():
-            if 'opcode_logits' in name or 'delta' in name:
-                density_reg += torch.mean(torch.abs(param))
+        density_reg = sum(torch.mean(torch.abs(param)) for name, param in self.named_parameters() if 'opcode_logits' in name or 'delta' in name)
         
         total_loss = loss_weights[0] * ce_loss + loss_weights[1] * rule_loss + loss_weights[2] * density_reg
         
