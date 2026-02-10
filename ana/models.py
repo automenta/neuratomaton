@@ -182,6 +182,9 @@ class HoloLink(nn.Module):
         self.k_proj = nn.Linear(input_dim, self.key_dim, bias=False)
         self.v_proj = nn.Linear(input_dim, self.d_model, bias=False)
         
+        self.out_proj = nn.Linear(self.d_model, self.d_model)
+        self.norm = nn.LayerNorm(self.d_model)
+        
         if config.orthogonal_init:
             nn.init.orthogonal_(self.k_proj.weight)
         
@@ -210,6 +213,8 @@ class HoloLink(nn.Module):
         q_t = F.normalize(q_t, p=2, dim=-1)
         
         retrieved = torch.bmm(q_t.unsqueeze(1), M_t).squeeze(1)
+        retrieved = self.out_proj(retrieved)
+        retrieved = self.norm(retrieved)
         return retrieved, M_t
 
     def forward_sequence(self, x, h):
@@ -226,6 +231,8 @@ class HoloLink(nn.Module):
         q = F.normalize(q, p=2, dim=-1)
         
         retrieved = torch.matmul(q.unsqueeze(-2), M_seq).squeeze(-2)
+        retrieved = self.out_proj(retrieved)
+        retrieved = self.norm(retrieved)
         return retrieved, M_seq
 
 class ANAModel(nn.Module):
@@ -235,6 +242,9 @@ class ANAModel(nn.Module):
         self.d_model = config.d_model
         self.state_dim = config.state_dim
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
+        
+        if config.use_position_encoding:
+            self.register_buffer('pos_encoding', self._create_sinusoidal_encoding(config.max_seq_len, config.d_model))
         
         self.layers = nn.ModuleList()
         for _ in range(config.num_layers):
@@ -262,6 +272,20 @@ class ANAModel(nn.Module):
         self.norm = nn.LayerNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size)
 
+    def _create_sinusoidal_encoding(self, max_len, d_model):
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe.unsqueeze(0)
+
+    def _add_position_encoding(self, x):
+        if not self.config.use_position_encoding:
+            return x
+        seq_len = x.size(1)
+        return x + self.pos_encoding[:, :seq_len, :]
+
     def forward(self, input_ids, return_info=False, force_prob=0.0):
         if self.config.use_parallel_scan and self.config.max_thinking_steps == 0:
             return self._forward_parallel(input_ids, return_info, force_prob)
@@ -270,6 +294,7 @@ class ANAModel(nn.Module):
 
     def _forward_parallel(self, input_ids, return_info=False, force_prob=0.0):
         x = self.embedding(input_ids)
+        x = self._add_position_encoding(x)
         info_log = []
         
         for i, layer in enumerate(self.layers):
@@ -334,6 +359,7 @@ class ANAModel(nn.Module):
 
     def _forward_sequential(self, input_ids, return_info=False, force_prob=0.0):
         x = self.embedding(input_ids)
+        x = self._add_position_encoding(x)
         batch, seq_len, _ = x.shape
         
         h_states = [[None] * self.config.track_count for _ in range(self.config.num_layers)]

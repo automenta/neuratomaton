@@ -25,6 +25,9 @@ class ANAConfig:
     use_hololink: bool = True
     use_controller: bool = True
     
+    use_position_encoding: bool = True
+    max_seq_len: int = 512
+    
     dropout: float = 0.0
 
 @dataclass

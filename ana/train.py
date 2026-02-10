@@ -150,7 +150,7 @@ def get_device(device_str):
         return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     return torch.device(device_str)
 
-def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_config: DataConfig, model_type="ana"):
+def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_config: DataConfig, model_type="ana", num_workers=4):
     device = get_device(train_config.device)
     print(f"Using device: {device}")
     
@@ -171,7 +171,7 @@ def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_confi
             min_noise=min_noise,
             max_noise=max_noise
         )
-        dataloader = DataLoader(dataset, batch_size=train_config.batch_size, shuffle=True, collate_fn=col_fn, num_workers=4, pin_memory=True)
+        dataloader = DataLoader(dataset, batch_size=train_config.batch_size, shuffle=True, collate_fn=col_fn, num_workers=num_workers, pin_memory=True)
         ana_config.vocab_size = data_config.vocab_size
     
     elif train_config.stage == '2b':
@@ -183,7 +183,7 @@ def run_training(ana_config: ANAConfig, train_config: TrainingConfig, data_confi
         if len(dataset) == 0:
             print("Error: Corpus empty.")
             return
-        dataloader = DataLoader(dataset, batch_size=train_config.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+        dataloader = DataLoader(dataset, batch_size=train_config.batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
         ana_config.vocab_size = 256
     
     if model_type == "baseline":
