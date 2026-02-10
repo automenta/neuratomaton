@@ -6,13 +6,23 @@ Key improvements:
 2. Selective Attention: Sparse attention for long-range dependencies  
 3. Query-Gated Routing: Explicit memory access on query tokens
 4. Multi-KV Training: Force memory utilization
+
+DEPRECATED: Use ana.models_v3 and ana.model_v3 instead.
 """
 
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 from ana.config import ANAConfig
+
+warnings.warn(
+    "ana.models_v2 is DEPRECATED. Use ana.models_v3 and ana.model_v3 instead. "
+    "This module will be removed in a future version.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 class ExternalMemory(nn.Module):

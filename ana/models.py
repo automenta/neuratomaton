@@ -1,8 +1,16 @@
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 from .config import ANAConfig
+
+warnings.warn(
+    "ana.models (v1) is DEPRECATED. Use ana.models_v3 and ana.model_v3 instead. "
+    "This module will be removed in a future version.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 @torch.jit.script
 def lru_scan_jit(u: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor, h_init: torch.Tensor) -> torch.Tensor:
