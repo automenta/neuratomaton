@@ -7,9 +7,11 @@ from ana.config_v2 import ANAv2Config, Trainingv2Config
 class BioANAConfig(ANAv2Config):
     variant: str = "nano"
     
-    relaxation_iterations: int = 20
+    relaxation_iterations: int = 7
     nudge_strength: float = 0.1
     spectral_radius: float = 0.99
+    convergence_threshold: float = 0.01
+    adaptive_relaxation: bool = True
     
     sparsity: float = 0.1
     dale_constraint: bool = True
@@ -37,8 +39,10 @@ class BioTrainingConfig(Trainingv2Config):
     curriculum_stages: List[str] = field(default_factory=lambda: ['0', '1', '2'])
     current_stage: str = '0'
     
-    relaxation_schedule: List[int] = field(default_factory=lambda: [50, 40, 30, 20, 10])
+    relaxation_schedule: List[int] = field(default_factory=lambda: [12, 7, 3, 2])
     adaptive_relaxation: bool = True
+    use_early_stopping: bool = True
+    convergence_threshold: float = 0.01
     
     stage_0_threshold: float = 0.98
     stage_1_threshold: float = 0.90
