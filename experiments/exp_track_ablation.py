@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""
+Experiment: Track Count Ablation
+Test effect of different numbers of parallel tracks
+"""
+import os
+import sys
+import json
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils import data
+import random
+
+sys.path.insert(0, '.')
+os.makedirs('archive/experiments', exist_ok=True)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Device: {device}")
+
+from ana.config import ANAConfig
+from ana.models import ANAModel
+
+class QuickMultiKV(data.Dataset):
+    def __init__(self, size=400, num_kv=8):
+        self.data = []
+        TOK_KEY, TOK_VAL, TOK_QUERY = 1, 2, 3
+        content = list(range(4, 30))
+        for _ in range(size):
+            kvs = [(random.choice(content), random.choice(content)) for _ in range(num_kv)]
+            seq = []
+            for k, v in kvs:
+                seq.extend([TOK_KEY, k, TOK_VAL, v])
+            seq.extend([random.choice(content) for _ in range(random.randint(3, 10))])
+            ti = random.randint(0, num_kv-1)
+            seq.extend([TOK_QUERY, kvs[ti][0], kvs[ti][1]])
+            x = torch.tensor(seq[:-1])
+            y = torch.tensor(seq[1:])
+            m = torch.ones_like(y, dtype=torch.float) * 0.01
+            m[-1] = 1.0
+            self.data.append((x, y, m))
+    def __len__(self): return len(self.data)
+    def __getitem__(self, i): return self.data[i]
+
+def collate(batch):
+    xs, ys, ms = zip(*batch)
+    ml = max(x.size(0) for x in xs)
+    return (torch.stack([F.pad(x, (0, ml-x.size(0))) for x in xs]),
+            torch.stack([F.pad(y, (0, ml-y.size(0))) for y in ys]),
+            torch.stack([F.pad(m, (0, ml-m.size(0))) for m in ms]))
+
+def train_eval(model, num_kv=8, epochs=20):
+    ds = QuickMultiKV(size=500, num_kv=num_kv)
+    loader = data.DataLoader(ds, batch_size=16, shuffle=True, collate_fn=collate)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+    crit = nn.CrossEntropyLoss(ignore_index=0, reduction='none')
+    
+    for _ in range(epochs):
+        model.train()
+        for x, y, m in loader:
+            x, y, m = x.to(device), y.to(device), m.to(device)
+            opt.zero_grad()
+            logits, _ = model(x)
+            loss = (crit(logits.view(-1, logits.size(-1)), y.view(-1)).view(y.size()) * m).sum() / m.sum()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            opt.step()
+    
+    model.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for x, y, m in loader:
+            x, y, m = x.to(device), y.to(device), m.to(device)
+            logits, _ = model(x)
+            for i in range(x.size(0)):
+                pos = (m[i] > 0.5).nonzero(as_tuple=True)[0][0]
+                if logits[i, pos].argmax().item() == y[i, pos].item():
+                    correct += 1
+                total += 1
+    return correct / total if total else 0
+
+TRACK_COUNTS = [1, 2, 3, 4]
+
+print("="*70)
+print("TRACK COUNT ABLATION")
+print("="*70)
+
+results = {}
+
+for num_tracks in TRACK_COUNTS:
+    print(f"\n{'='*70}")
+    print(f"{num_tracks} track(s)")
+    print(f"{'='*70}")
+    
+    results[num_tracks] = {}
+    
+    for kv in [4, 8, 12]:
+        print(f"  {kv} KV pairs...", end=' ')
+        accs = []
+        for seed in [42, 123]:
+            torch.manual_seed(seed)
+            random.seed(seed)
+            
+            model = ANAModel(ANAConfig(
+                d_model=64, num_layers=2, state_dim=64, 
+                vocab_size=30, track_count=num_tracks,
+                use_hololink=True, use_controller=True
+            )).to(device)
+            
+            params = sum(p.numel() for p in model.parameters())
+            acc = train_eval(model, num_kv=kv, epochs=25)
+            accs.append(acc)
+        
+        mean_acc = sum(accs) / len(accs)
+        results[num_tracks][kv] = {'mean': mean_acc, 'params': params}
+        print(f"{mean_acc*100:.1f}% ({params:,} params)")
+
+with open('archive/experiments/track_ablation.json', 'w') as f:
+    json.dump(results, f, indent=2)
+
+print("\n" + "="*70)
+print("TRACK COUNT SUMMARY")
+print("="*70)
+print(f"{'Tracks':>8} | {'4 KV':>8} | {'8 KV':>8} | {'12 KV':>8} | {'Params':>10}")
+print("-"*50)
+for num_tracks in TRACK_COUNTS:
+    print(f"{num_tracks:>8} | {results[num_tracks][4]['mean']*100:>7.1f}% | {results[num_tracks][8]['mean']*100:>7.1f}% | {results[num_tracks][12]['mean']*100:>7.1f}% | {results[num_tracks][4]['params']:>10,}")
+
+print(f"\nResults saved to: archive/experiments/track_ablation.json")
