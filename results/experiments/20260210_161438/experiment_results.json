@@ -1,0 +1,45 @@
+{
+  "variant": "nano",
+  "stages": "0",
+  "config": {
+    "batch_size": 8,
+    "learning_rate": 0.001,
+    "num_epochs": 3,
+    "steps_per_epoch": 20,
+    "seed": 42
+  },
+  "stage_results": [
+    {
+      "stage": "0",
+      "epochs_trained": 3,
+      "best_accuracy": 0.03125,
+      "final_val_accuracy": 0.03125,
+      "epoch_metrics": [
+        {
+          "epoch": 1,
+          "train_loss": 4.187878155708313,
+          "train_accuracy": 0.025,
+          "val_accuracy": 0.03125,
+          "avg_iterations": 4.809375,
+          "time_s": 13.231403589248657
+        },
+        {
+          "epoch": 2,
+          "train_loss": 3.4360185980796816,
+          "train_accuracy": 0.14375,
+          "val_accuracy": 0.03125,
+          "avg_iterations": 4.8671875,
+          "time_s": 13.203441143035889
+        },
+        {
+          "epoch": 3,
+          "train_loss": 2.9180241942405702,
+          "train_accuracy": 0.24375,
+          "val_accuracy": 0.03125,
+          "avg_iterations": 4.9484375,
+          "time_s": 13.555154800415039
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "baseline": {
+    "steps_per_sec": 0.5414065267623043,
+    "tokens_per_sec": 138.6000708511499,
+    "time_per_step_ms": 1847.0409028501308,
+    "memory_mb": 74.08642578125,
+    "config": {
+      "name": "baseline",
+      "use_amp": false,
+      "use_compile": false,
+      "adaptive_relaxation": false
+    }
+  },
+  "amp_only": {
+    "steps_per_sec": 0.49891140024528985,
+    "tokens_per_sec": 127.7213184627942,
+    "time_per_step_ms": 2004.3639000999974,
+    "memory_mb": 82.0439453125,
+    "config": {
+      "name": "amp_only",
+      "use_amp": true,
+      "use_compile": false,
+      "adaptive_relaxation": false
+    }
+  },
+  "adaptive_only": {
+    "steps_per_sec": 0.6262252405639462,
+    "tokens_per_sec": 160.31366158437024,
+    "time_per_step_ms": 1596.8695210998703,
+    "memory_mb": 65.951171875,
+    "config": {
+      "name": "adaptive_only",
+      "use_amp": false,
+      "use_compile": false,
+      "adaptive_relaxation": true
+    }
+  },
+  "amp_adaptive": {
+    "steps_per_sec": 0.6181314809359,
+    "tokens_per_sec": 158.2416591195904,
+    "time_per_step_ms": 1617.7787911496125,
+    "memory_mb": 77.22314453125,
+    "config": {
+      "name": "amp_adaptive",
+      "use_amp": true,
+      "use_compile": false,
+      "adaptive_relaxation": true
+    }
+  }
+}
