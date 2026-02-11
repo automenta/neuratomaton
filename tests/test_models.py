@@ -97,6 +97,45 @@ class TestModels(unittest.TestCase):
         # ANA should have more params due to HoloLink and Controller
         self.assertGreater(ana_params, baseline_params)
 
+    def test_thinking_steps_execution(self):
+        self.config.max_thinking_steps = 2
+        model = ANAModel(self.config)
+        seq_len = 5
+        input_ids = torch.randint(0, self.config.vocab_size, (self.config.batch_size, seq_len))
+
+        logits, info = model(input_ids, return_info=True)
+        self.assertEqual(logits.shape, (self.config.batch_size, seq_len, self.config.vocab_size))
+
+        # Check info log has steps info
+        if info:
+            self.assertIn('avg_steps', info[0])
+
+    def test_dynamic_halting(self):
+        self.config.max_thinking_steps = 5
+        self.config.use_controller = True
+        model = ANAModel(self.config)
+
+        # Force controller to output high halt probability
+        # The head outputs: [alpha, beta, mix] * tracks + ret + halt
+        # halt is the last element
+        with torch.no_grad():
+            for layer in model.layers:
+                layer['controller'].head.bias[-1].fill_(10.0) # High positive bias => high prob
+
+        input_ids = torch.randint(0, self.config.vocab_size, (2, 5))
+
+        logits, info = model(input_ids, return_info=True)
+
+        # Should halt after step 0 (so 1 step total)
+        # Because at step 0, it predicts halt=True.
+        # Halting mask becomes 1 at end of step 0.
+        # Loop check at start of step 1 sees all halted -> Break.
+        # So steps_taken should be 1.
+
+        if info:
+            avg_steps = info[0]['avg_steps']
+            self.assertAlmostEqual(avg_steps, 1.0, delta=0.1)
+
 
 if __name__ == '__main__':
     unittest.main()
