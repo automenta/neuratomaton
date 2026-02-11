@@ -1,0 +1,66 @@
+ArXiv Paper Compilation Guide
+==============================
+
+Files Created
+-------------
+- arxiv_paper.tex: 8-page LaTeX paper
+- synergy_plot.png: Synergy visualization
+- curriculum_demo.png: Scale-aware training visualization
+
+Compilation Methods
+-------------------
+
+Method 1: Online (Recommended - No Installation)
+-------------------------------------------------
+1. Go to https://www.overleaf.com/
+2. Create a new project
+3. Upload all files from this directory
+4. Click "Recompile"
+5. Download the PDF as "arxiv_paper.pdf"
+
+Method 2: Local (Requires LaTeX)
+---------------------------------
+If you have LaTeX installed:
+```bash
+cd papers/arxiv_submissions/arxiv_paper
+pdflatex arxiv_paper.tex
+pdflatex arxiv_paper.tex  # Run twice for references
+```
+
+Method 3: Using Docker
+-----------------------
+```bash
+docker run --rm -v $(pwd):/workdir -w /workdir texlive/texlive pdflatex arxiv_paper.tex
+```
+
+After Compilation
+-----------------
+1. Verify PDF compiles correctly
+2. Check all figures display properly
+3. Count pages (should be ~8 pages)
+4. Update submission checklist
+
+Submission Checklist
+-------------------
+[ ] PDF compiled successfully
+[ ] Figures display correctly
+[ ] Page count < 8 pages
+[ ] Abstract < 1920 characters
+[ ] Author information added
+[ ] References formatted
+
+Next Steps
+----------
+1. Compile the PDF using Method 1 (Overleaf)
+2. Review the compiled PDF
+3. Go to https://arxiv.org/submit
+4. Use metadata from arxiv_metadata.json
+5. Upload PDF and submit
+
+Troubleshooting
+---------------
+- If figures don't appear: Check file paths
+- If compilation errors: Missing LaTeX packages (install with your package manager)
+- If page count exceeds limit: Reduce figure sizes or text
+
+For help: Check PLAN.md or contact support
