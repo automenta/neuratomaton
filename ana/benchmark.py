@@ -1,344 +1,191 @@
 """
-Benchmark Suite - Systematic evaluation of model capabilities
-
-Defines standard tasks for shallow model space exploration:
-- Single-KV associative recall
-- Multi-KV associative recall (capacity test)
-- Copy task
-- Reverse task
-- Arithmetic task (simple computation)
+ANA Benchmark Suite - Systematic evaluation of algorithmic reasoning
 """
-
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from typing import Dict, List, Tuple
-import random
+from torch.utils.data import DataLoader
+from ana import ANAConfig, ANAModel
+from ana.models import BaselineSSM
+from ana.tasks import TASK_REGISTRY
+import json
 
 
-# ============================================================================
-# DATASETS
-# ============================================================================
-
-class SingleKVDataset(Dataset):
-    """Single key-value associative recall (needle-in-haystack)."""
-
-    def __init__(self, size=500, vocab_size=30, min_noise=5, max_noise=20):
-        self.TOK_KEY, self.TOK_VAL, self.TOK_QUERY = 1, 2, 3
-        self.content = list(range(4, vocab_size))
-        self.data = []
-
-        for _ in range(size):
-            key = random.choice(self.content)
-            value = random.choice(self.content)
-
-            seq = [self.TOK_KEY, key, self.TOK_VAL, value]
-            noise_len = random.randint(min_noise, max_noise)
-            seq.extend([random.choice(self.content) for _ in range(noise_len)])
-            seq.extend([self.TOK_QUERY, key, value])
-
-            x = torch.tensor(seq[:-1], dtype=torch.long)
-            y = torch.tensor(seq[1:], dtype=torch.long)
-            mask = torch.zeros_like(y, dtype=torch.float)
-            mask[-1] = 1.0
-
-            self.data.append((x, y, mask))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-class MultiKVDataset(Dataset):
-    """Multi-KV associative recall - tests capacity."""
-
-    def __init__(self, size=500, vocab_size=30, num_kv_pairs=2, min_noise=3, max_noise=10):
-        self.TOK_KEY, self.TOK_VAL, self.TOK_QUERY = 1, 2, 3
-        self.content = list(range(4, vocab_size))
-        self.data = []
-
-        for _ in range(size):
-            kv_pairs = [(random.choice(self.content), random.choice(self.content)) for _ in range(num_kv_pairs)]
-
-            seq = []
-            for k, v in kv_pairs:
-                seq.extend([self.TOK_KEY, k, self.TOK_VAL, v])
-
-            noise_len = random.randint(min_noise, max_noise)
-            seq.extend([random.choice(self.content) for _ in range(noise_len)])
-
-            target_idx = random.randint(0, num_kv_pairs - 1)
-            seq.extend([self.TOK_QUERY, kv_pairs[target_idx][0], kv_pairs[target_idx][1]])
-
-            x = torch.tensor(seq[:-1], dtype=torch.long)
-            y = torch.tensor(seq[1:], dtype=torch.long)
-            mask = torch.zeros_like(y, dtype=torch.float)
-            mask[-1] = 1.0
-
-            self.data.append((x, y, mask))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-class CopyDataset(Dataset):
-    """Copy task - reproduce sequence verbatim."""
-
-    def __init__(self, size=500, vocab_size=30, seq_len=8):
-        self.TOK_COPY, self.TOK_END = 1, 2
-        self.content = list(range(3, vocab_size))
-        self.data = []
-
-        for _ in range(size):
-            content = [random.choice(self.content) for _ in range(seq_len)]
-            seq = [self.TOK_COPY] + content + [self.TOK_END] + content
-
-            x = torch.tensor(seq[:-1], dtype=torch.long)
-            y = torch.tensor(seq[1:], dtype=torch.long)
-            mask = torch.ones_like(y, dtype=torch.float)  # All positions matter
-
-            self.data.append((x, y, mask))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-class ReverseDataset(Dataset):
-    """Reverse task - output reverse of input."""
-
-    def __init__(self, size=500, vocab_size=30, seq_len=6):
-        self.TOK_REVERSE, self.TOK_END = 1, 2
-        self.content = list(range(3, vocab_size))
-        self.data = []
-
-        for _ in range(size):
-            content = [random.choice(self.content) for _ in range(seq_len)]
-            seq = [self.TOK_REVERSE] + content + [self.TOK_END] + list(reversed(content))
-
-            x = torch.tensor(seq[:-1], dtype=torch.long)
-            y = torch.tensor(seq[1:], dtype=torch.long)
-            mask = torch.ones_like(y, dtype=torch.float)
-
-            self.data.append((x, y, mask))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-class ArithmeticDataset(Dataset):
-    """Simple arithmetic task: learn to add small numbers."""
-
-    def __init__(self, size=500, vocab_size=30, max_operand=10):
-        self.TOK_ADD, self.TOK_EQ = 1, 2
-        # Numbers are encoded as 3 + n
-        self.data = []
-
-        for _ in range(size):
-            a = random.randint(0, max_operand)
-            b = random.randint(0, max_operand)
-            c = a + b
-
-            seq = [3 + a, self.TOK_ADD, 3 + b, self.TOK_EQ, 3 + c]
-
-            x = torch.tensor(seq[:-1], dtype=torch.long)
-            y = torch.tensor(seq[1:], dtype=torch.long)
-            mask = torch.zeros_like(y, dtype=torch.float)
-            mask[-1] = 1.0
-
-            self.data.append((x, y, mask))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-# ============================================================================
-# TASK DEFINITIONS
-# ============================================================================
-
-TASK_DATASETS = {
-    "single_kv": SingleKVDataset,
-    "multi_kv": MultiKVDataset,
-    "copy": CopyDataset,
-    "reverse": ReverseDataset,
-    "arithmetic": ArithmeticDataset,
-}
-
-
-def collate_fn(batch):
-    """Pad sequences to same length."""
-    xs, ys, masks = zip(*batch)
-    max_len = max(t.size(0) for t in xs)
-
-    x_pad = torch.stack([F.pad(t, (0, max_len - t.size(0))) for t in xs])
-    y_pad = torch.stack([F.pad(t, (0, max_len - t.size(0)), value=-100) for t in ys])
-    # Mask needs to be adjusted - the target position should remain at the same index
-    m_pad = torch.stack([F.pad(t, (0, max_len - t.size(0))) for t in masks])
-
-    return x_pad, y_pad, m_pad
-
-
-# ============================================================================
-# EVALUATION PROTOCOLS
-# ============================================================================
-
-def evaluate_task(model: nn.Module, task_name: str, device='cpu', epochs=10, **dataset_args) -> Dict:
-    """
-    Evaluate a model on a task.
-
-    Returns:
-        results dict with:
-            - final_accuracy: final test accuracy
-            - best_accuracy: best test accuracy during training
-            - final_loss: final training loss
-            - history: training history
-    """
-    # Create dataset
-    dataset_class = TASK_DATASETS[task_name]
-    train_ds = dataset_class(size=400, **dataset_args)
-    test_ds = dataset_class(size=100, **dataset_args)
-
-    # Use collate_fn that tracks lengths
-    def collate_with_lengths(batch):
+def collate_with_mask(batch):
+    """Collate function that handles variable-length sequences and masks."""
+    if len(batch[0]) == 2:
+        xs, ys = zip(*batch)
+        masks = None
+    else:
         xs, ys, masks = zip(*batch)
-        max_len = max(t.size(0) for t in xs)
-        lengths = torch.tensor([t.size(0) for t in xs])
-        x_pad = torch.stack([F.pad(t, (0, max_len - t.size(0))) for t in xs])
-        y_pad = torch.stack([F.pad(t, (0, max_len - t.size(0)), value=-100) for t in ys])
-        m_pad = torch.stack([F.pad(t, (0, max_len - t.size(0))) for t in masks])
-        return x_pad, y_pad, m_pad, lengths
+    
+    max_len = max(x.size(0) for x in xs)
+    
+    xs_pad = torch.stack([F.pad(x, (0, max_len - x.size(0))) for x in xs])
+    ys_pad = torch.stack([F.pad(y, (0, max_len - y.size(0)), value=-100) for y in ys])
+    
+    if masks is not None:
+        masks_pad = torch.stack([F.pad(m, (0, max_len - m.size(0))) for m in masks])
+        return xs_pad, ys_pad, masks_pad
+    return xs_pad, ys_pad, None
 
-    train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, collate_fn=collate_with_lengths)
-    test_loader = DataLoader(test_ds, batch_size=16, shuffle=False, collate_fn=collate_with_lengths)
 
-    # Setup optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
-    criterion = nn.CrossEntropyLoss(ignore_index=-100, reduction='none')
-
-    history = {'loss': [], 'test_acc': []}
-
-    for epoch in range(epochs):
-        model.train()
-        epoch_loss = 0
-
-        for x, y, mask, lengths in train_loader:
-            x, y, mask = x.to(device), y.to(device), mask.to(device)
-
+def evaluate_generalization(
+    model,
+    task_name,
+    train_lengths,
+    test_lengths,
+    vocab_size=20,
+    steps_per_length=50,
+    lr=1e-2,
+    device='cpu'
+):
+    """
+    Evaluate model's ability to generalize to longer sequences.
+    
+    Returns dict with:
+        - train_accuracy: accuracy on training lengths
+        - test_accuracy: accuracy on test lengths (generalization)
+        - k_ratio: test_length / max(train_length)
+    """
+    model = model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction='none')
+    
+    results = {'train': {}, 'test': {}}
+    
+    # Training
+    model.train()
+    for L in train_lengths:
+        TaskClass = TASK_REGISTRY[task_name]
+        dataset = TaskClass(num_samples=steps_per_length * 16, seq_len=L, vocab_size=vocab_size)
+        loader = DataLoader(dataset, batch_size=16, shuffle=True, collate_fn=collate_with_mask)
+        
+        for x, y, mask in loader:
+            x, y = x.to(device), y.to(device)
+            if mask is not None:
+                mask = mask.to(device)
+            
             optimizer.zero_grad()
             logits, _ = model(x)
-
             loss_raw = criterion(logits.view(-1, logits.size(-1)), y.view(-1)).view(y.size())
-            loss = (loss_raw * mask).sum() / mask.sum().clamp(min=1)
-
+            
+            if mask is not None:
+                loss = (loss_raw * mask).sum() / mask.sum()
+            else:
+                loss = loss_raw.mean()
+            
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-
-            epoch_loss += loss.item()
-
-        # Evaluate
-        model.eval()
-        correct, total = 0, 0
-        with torch.no_grad():
-            for x, y, mask, lengths in test_loader:
+    
+    # Evaluation
+    model.eval()
+    with torch.no_grad():
+        # Train accuracy
+        for L in train_lengths:
+            dataset = TaskClass(num_samples=100, seq_len=L, vocab_size=vocab_size)
+            loader = DataLoader(dataset, batch_size=16, collate_fn=collate_with_mask)
+            
+            correct, total = 0, 0
+            for x, y, mask in loader:
                 x, y = x.to(device), y.to(device)
                 logits, _ = model(x)
-                preds = logits.argmax(dim=-1)
-                # Check prediction at position (length-1) for each sequence
-                for i, length in enumerate(lengths):
-                    pred = preds[i, length-1].item()
-                    target = y[i, length-1].item()
-                    if pred == target:
-                        correct += 1
-                    total += 1
-
-        history['loss'].append(epoch_loss / len(train_loader))
-        history['test_acc'].append(correct / total)
-
-    return {
-        'final_accuracy': history['test_acc'][-1],
-        'best_accuracy': max(history['test_acc']),
-        'final_loss': history['loss'][-1],
-        'history': history,
-    }
-
-
-# ============================================================================
-# BENCHMARK SUITE
-# ============================================================================
-
-class BenchmarkSuite:
-    """Run a comprehensive benchmark on a model."""
-
-    def __init__(self, device='cpu'):
-        self.device = device
-        self.tasks = list(TASK_DATASETS.keys())
-
-    def run_full_benchmark(self, model: nn.Module, epochs_per_task=10) -> Dict[str, Dict]:
-        """Run all benchmarks."""
-        results = {}
-
-        for task_name in self.tasks:
-            print(f"  Running task: {task_name}...")
-            try:
-                result = evaluate_task(model, task_name, self.device, epochs=epochs_per_task)
-                results[task_name] = result
-            except Exception as e:
-                print(f"    Error on {task_name}: {e}")
-                results[task_name] = {'error': str(e)}
-
-        return results
-
-    def run_quick_benchmark(self, model: nn.Module) -> Dict[str, float]:
-        """Quick benchmark with few epochs."""
-        results = {}
-
-        for task_name in self.tasks:
-            try:
-                result = evaluate_task(model, task_name, self.device, epochs=5)
-                results[task_name] = result['best_accuracy']
-            except Exception as e:
-                results[task_name] = 0.0
-
-        return results
-
-
-# ============================================================================
-# MULTI-KV CAPACITY TEST
-# ============================================================================
-
-def test_capacity(model_factory, device='cpu', max_kv_pairs=8) -> Dict[int, float]:
-    """
-    Test model capacity on multi-KV task.
-
-    Returns dict of {num_kv_pairs: accuracy}.
-    """
-    results = {}
-
-    for num_kv in [1, 2, 3, 4, 6, 8]:
-        if num_kv > max_kv_pairs:
-            break
-
-        # Create fresh model for each test
-        model = model_factory()
-        model = model.to(device)
-
-        print(f"  Testing {num_kv} KV pairs...")
-        result = evaluate_task(model, 'multi_kv', device, epochs=12, num_kv_pairs=num_kv)
-        results[num_kv] = result['best_accuracy']
-
+                preds = logits.argmax(-1)
+                
+                valid = (y != -100)
+                correct += (preds[valid] == y[valid]).sum().item()
+                total += valid.sum().item()
+            
+            results['train'][L] = correct / total if total > 0 else 0
+        
+        # Test accuracy (generalization)
+        max_train = max(train_lengths)
+        for L in test_lengths:
+            dataset = TaskClass(num_samples=100, seq_len=L, vocab_size=vocab_size)
+            loader = DataLoader(dataset, batch_size=16, collate_fn=collate_with_mask)
+            
+            correct, total = 0, 0
+            for x, y, mask in loader:
+                x, y = x.to(device), y.to(device)
+                logits, _ = model(x)
+                preds = logits.argmax(-1)
+                
+                valid = (y != -100)
+                correct += (preds[valid] == y[valid]).sum().item()
+                total += valid.sum().item()
+            
+            results['test'][L] = {
+                'accuracy': correct / total if total > 0 else 0,
+                'k_ratio': L / max_train
+            }
+    
     return results
+
+
+def run_benchmark_suite(
+    model_class,
+    config,
+    tasks=['copy', 'reverse', 'associative_recall'],
+    train_lengths=[2, 3, 4, 5, 6],
+    test_lengths=[7, 8, 10, 12],
+    device='cpu'
+):
+    """Run complete benchmark suite on a model."""
+    all_results = {}
+    
+    for task_name in tasks:
+        print(f"\n{'='*50}")
+        print(f"Task: {task_name}")
+        print(f"{'='*50}")
+        
+        model = model_class(config)
+        params = sum(p.numel() for p in model.parameters())
+        print(f"Parameters: {params:,}")
+        
+        results = evaluate_generalization(
+            model, task_name, train_lengths, test_lengths,
+            vocab_size=config.vocab_size, device=device
+        )
+        
+        all_results[task_name] = results
+        
+        print(f"\nTrain accuracy:")
+        for L, acc in results['train'].items():
+            print(f"  Length {L}: {100*acc:.1f}%")
+        
+        print(f"\nGeneralization:")
+        for L, data in results['test'].items():
+            print(f"  Length {L} (k={data['k_ratio']:.1f}): {100*data['accuracy']:.1f}%")
+    
+    return all_results
+
+
+def compare_models(config, device='cpu'):
+    """Compare ANA vs BaselineSSM on all tasks."""
+    print("="*60)
+    print("ANA vs BaselineSSM Comparison")
+    print("="*60)
+    
+    results = {}
+    
+    for name, ModelClass in [('ANA', ANAModel), ('Baseline', BaselineSSM)]:
+        print(f"\n--- {name} ---")
+        results[name] = run_benchmark_suite(
+            ModelClass, config,
+            tasks=['copy', 'reverse'],
+            device=device
+        )
+    
+    return results
+
+
+if __name__ == "__main__":
+    config = ANAConfig(
+        d_model=32, vocab_size=20, state_dim=32,
+        track_count=2, num_layers=2
+    )
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    results = compare_models(config, device)
+    
+    with open('benchmark_results.json', 'w') as f:
+        json.dump(results, f, indent=2)

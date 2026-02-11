@@ -1,491 +1,232 @@
-import os
-import json
+"""
+ANA Research Experiments
+
+Core experiments for validating multi-track SSM generalization.
+"""
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from ana.config import ANAConfig, TrainingConfig, DataConfig
-from ana.models import ANAModel, BaselineSSM
-from ana.train import run_training, evaluate, col_fn
-from ana.data import AssociativeRecallDataset
-from ana.benchmarks import BenchmarkEvaluator
-import time
+import torch.nn.functional as F
+from ana import ANAConfig, ANAModel
+from ana.models import BaselineSSM
 
-SCALING_CONFIGS = {
-    'tiny': {
-        'd_model': 32,
-        'state_dim': 32,
-        'num_layers': 1,
-        'track_count': 2,
-        'key_dim': 32,
-        'epochs': 3,
-        'batch_size': 32,
-    },
-    'small': {
-        'd_model': 64,
-        'state_dim': 64,
-        'num_layers': 2,
-        'track_count': 2,
-        'key_dim': 64,
-        'epochs': 3,
-        'batch_size': 16,
-    },
-    'medium': {
-        'd_model': 128,
-        'state_dim': 128,
-        'num_layers': 3,
-        'track_count': 2,
-        'key_dim': 128,
-        'epochs': 3,
-        'batch_size': 8,
-    },
-    'large': {
-        'd_model': 256,
-        'state_dim': 256,
-        'num_layers': 4,
-        'track_count': 3,
-        'key_dim': 256,
-        'epochs': 3,
-        'batch_size': 4,
-    },
-    'xlarge': {
-        'd_model': 512,
-        'state_dim': 512,
-        'num_layers': 8,
-        'track_count': 4,
-        'key_dim': 384,
-        'epochs': 5,
-        'batch_size': 2,
-    },
-    'xxlarge': {
-        'd_model': 768,
-        'state_dim': 768,
-        'num_layers': 12,
-        'track_count': 4,
-        'key_dim': 512,
-        'epochs': 5,
-        'batch_size': 1,
-    },
-    '125M': {
-        'd_model': 768,
-        'state_dim': 768,
-        'num_layers': 14,
-        'track_count': 4,
-        'key_dim': 512,
-        'epochs': 5,
-        'batch_size': 1,
-    },
-}
 
-BASELINE_SCALING_CONFIGS = {
-    'tiny': {
-        'd_model': 32,
-        'state_dim': 32,
-        'num_layers': 1,
-        'epochs': 3,
-        'batch_size': 32,
-    },
-    'small': {
-        'd_model': 64,
-        'state_dim': 64,
-        'num_layers': 2,
-        'epochs': 3,
-        'batch_size': 16,
-    },
-    'medium': {
-        'd_model': 128,
-        'state_dim': 128,
-        'num_layers': 3,
-        'epochs': 3,
-        'batch_size': 8,
-    },
-    'large': {
-        'd_model': 256,
-        'state_dim': 256,
-        'num_layers': 4,
-        'epochs': 3,
-        'batch_size': 4,
-    },
-    'xlarge': {
-        'd_model': 512,
-        'state_dim': 512,
-        'num_layers': 8,
-        'epochs': 5,
-        'batch_size': 2,
-    },
-    'xxlarge': {
-        'd_model': 1024,
-        'state_dim': 1024,
-        'num_layers': 12,
-        'epochs': 5,
-        'batch_size': 1,
-    },
-    '125M': {
-        'd_model': 2048,
-        'state_dim': 2048,
-        'num_layers': 16,
-        'epochs': 5,
-        'batch_size': 1,
-    },
-}
-
-ABLATION_CONFIGS = {
-    'full': {
-        'use_hololink': True,
-        'use_controller': True,
-        'max_thinking_steps': 0,
-    },
-    'no_hololink': {
-        'use_hololink': False,
-        'use_controller': True,
-        'max_thinking_steps': 0,
-    },
-    'no_controller': {
-        'use_hololink': True,
-        'use_controller': False,
-        'max_thinking_steps': 0,
-    },
-    'static_only': {
-        'use_hololink': False,
-        'use_controller': False,
-        'max_thinking_steps': 0,
-    },
-    'with_thinking': {
-        'use_hololink': True,
-        'use_controller': True,
-        'max_thinking_steps': 2,
-    },
-}
-
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-def run_scaling_study(base_config, scale='small', output_dir='archive/scaling'):
-    os.makedirs(output_dir, exist_ok=True)
+def train_curriculum(
+    task='reverse',
+    train_lengths=(2, 3, 4, 5, 6),
+    test_lengths=(7, 8, 10, 12),
+    steps=300,
+    lr=1e-2,
+    d_model=32,
+    state_dim=32,
+    track_count=2,
+    use_hololink=True,
+    use_controller=True,
+    vocab_size=10,
+    batch_size=16,
+    verbose=True
+):
+    """
+    Train with curriculum learning on multiple lengths.
+    Test generalization to unseen lengths.
     
-    scale_config = SCALING_CONFIGS[scale]
-    
-    ana_config = ANAConfig(
-        d_model=scale_config['d_model'],
-        state_dim=scale_config['state_dim'],
-        num_layers=scale_config['num_layers'],
-        track_count=scale_config['track_count'],
-        key_dim=scale_config['key_dim'],
-        vocab_size=base_config.get('vocab_size', 50),
-        use_parallel_scan=True,
+    Returns: dict with training and generalization results
+    """
+    config = ANAConfig(
+        d_model=d_model,
+        vocab_size=vocab_size,
+        state_dim=state_dim,
+        track_count=track_count,
+        use_hololink=use_hololink,
+        use_controller=use_controller,
     )
+    model = ANAModel(config)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
-    train_config = TrainingConfig(
-        batch_size=scale_config['batch_size'],
-        epochs=scale_config['epochs'],
-        stage='2a',
-        save_checkpoints=False,
-    )
+    if verbose:
+        params = sum(p.numel() for p in model.parameters())
+        print(f"Training ANA ({params:,} params)")
+        print(f"  Train lengths: {train_lengths}")
+        print(f"  Test lengths: {test_lengths}")
     
-    data_config = DataConfig(
-        vocab_size=base_config.get('vocab_size', 50),
-        min_noise=base_config.get('min_noise', 10),
-        max_noise=base_config.get('max_noise', 50),
-        dataset_size=base_config.get('dataset_size', 2000),
-    )
-    
-    print(f"\n{'='*60}")
-    print(f"Scaling Study: {scale.upper()}")
-    print(f"{'='*60}")
-    
-    model = ANAModel(ana_config)
-    params = count_parameters(model)
-    print(f"Parameters: {params:,}")
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    start_time = time.time()
-    history = run_training(ana_config, train_config, data_config, model_type='ana')
-    train_time = time.time() - start_time
-    
-    final_loss = history['loss'][-1]
-    final_acc = history['needle_acc'][-1]
-    
-    print(f"\nFinal Loss: {final_loss:.4f}")
-    print(f"Final Needle Accuracy: {final_acc:.2%}")
-    print(f"Training Time: {train_time:.1f}s")
-    
-    results = {
-        'scale': scale,
-        'params': params,
-        'final_loss': final_loss,
-        'final_acc': final_acc,
-        'train_time': train_time,
-        'config': {
-            'd_model': scale_config['d_model'],
-            'state_dim': scale_config['state_dim'],
-            'num_layers': scale_config['num_layers'],
-            'track_count': scale_config['track_count'],
-        }
-    }
-    
-    results_path = os.path.join(output_dir, f'scaling_{scale}.json')
-    with open(results_path, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    return results
-
-def run_ablation_study(base_config, ablation='full', output_dir='archive/ablations'):
-    os.makedirs(output_dir, exist_ok=True)
-    
-    ablation_config = ABLATION_CONFIGS[ablation]
-    
-    ana_config = ANAConfig(
-        d_model=base_config.get('d_model', 64),
-        state_dim=base_config.get('state_dim', 64),
-        num_layers=base_config.get('num_layers', 2),
-        track_count=base_config.get('track_count', 2),
-        vocab_size=base_config.get('vocab_size', 50),
-        use_parallel_scan=True,
-        **ablation_config
-    )
-    
-    train_config = TrainingConfig(
-        batch_size=base_config.get('batch_size', 16),
-        epochs=base_config.get('epochs', 10),
-        stage='2a',
-        save_checkpoints=False,
-    )
-    
-    data_config = DataConfig(
-        vocab_size=base_config.get('vocab_size', 50),
-        min_noise=10,
-        max_noise=50,
-        dataset_size=base_config.get('dataset_size', 100),
-    )
-    
-    print(f"\n{'='*60}")
-    print(f"Ablation Study: {ablation}")
-    print(f"{'='*60}")
-    print(f"Config: {ablation_config}")
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    start_time = time.time()
-    history = run_training(ana_config, train_config, data_config, model_type='ana')
-    train_time = time.time() - start_time
-    
-    model = ANAModel(ana_config).to(device)
-    
-    evaluator = BenchmarkEvaluator(model, device, ana_config.vocab_size)
-    benchmark_results = evaluator.run_all_benchmarks()
-    
-    results = {
-        'ablation': ablation,
-        'config': ablation_config,
-        'final_loss': history['loss'][-1],
-        'final_acc': history['needle_acc'][-1],
-        'train_time': train_time,
-        'benchmarks': benchmark_results,
-    }
-    
-    results_path = os.path.join(output_dir, f'ablation_{ablation}.json')
-    with open(results_path, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    return results
-
-def run_full_study(output_dir='archive/full_study'):
-    os.makedirs(output_dir, exist_ok=True)
-    
-    base_config = {
-        'vocab_size': 50,
-        'min_noise': 10,
-        'max_noise': 50,
-        'dataset_size': 2000,
-        'd_model': 64,
-        'state_dim': 64,
-        'num_layers': 2,
-        'track_count': 2,
-        'batch_size': 16,
-        'epochs': 10,
-    }
-    
-    all_results = {
-        'scaling': {},
-        'ablations': {},
-    }
-    
-    print("\n" + "="*70)
-    print("ANA FULL RESEARCH STUDY")
-    print("="*70)
-    
-    for ablation_name in ABLATION_CONFIGS:
-        try:
-            results = run_ablation_study(base_config, ablation_name, output_dir)
-            all_results['ablations'][ablation_name] = results
-        except Exception as e:
-            print(f"Error in ablation {ablation_name}: {e}")
-            all_results['ablations'][ablation_name] = {'error': str(e)}
-    
-    print("\n" + "="*70)
-    print("ABLATION STUDY SUMMARY")
-    print("="*70)
-    print(f"{'Ablation':<20} {'Loss':>10} {'Acc':>10} {'MQAR_16':>10}")
-    print("-"*50)
-    
-    for name, results in all_results['ablations'].items():
-        if 'error' not in results:
-            loss = results['final_loss']
-            acc = results['final_acc']
-            mqar = results['benchmarks'].get('MQAR_16_pairs', 0)
-            print(f"{name:<20} {loss:>10.4f} {acc:>10.2%} {mqar:>10.2%}")
-    
-    summary_path = os.path.join(output_dir, 'full_study_summary.json')
-    with open(summary_path, 'w') as f:
-        json.dump(all_results, f, indent=2)
-    
-    print(f"\nFull study saved to {summary_path}")
-    
-    return all_results
-
-def run_baseline_scaling_study(base_config, scale='small', output_dir='archive/baseline_scaling'):
-    os.makedirs(output_dir, exist_ok=True)
-    
-    scale_config = BASELINE_SCALING_CONFIGS[scale]
-    
-    ana_config = ANAConfig(
-        d_model=scale_config['d_model'],
-        state_dim=scale_config['state_dim'],
-        num_layers=scale_config['num_layers'],
-        vocab_size=base_config.get('vocab_size', 50),
-        use_parallel_scan=True,
-    )
-    
-    train_config = TrainingConfig(
-        batch_size=scale_config['batch_size'],
-        epochs=scale_config['epochs'],
-        stage='2a',
-        save_checkpoints=False,
-    )
-    
-    data_config = DataConfig(
-        vocab_size=base_config.get('vocab_size', 50),
-        min_noise=base_config.get('min_noise', 10),
-        max_noise=base_config.get('max_noise', 50),
-        dataset_size=base_config.get('dataset_size', 2000),
-    )
-    
-    print(f"\n{'='*60}")
-    print(f"BASELINE Scaling Study: {scale.upper()}")
-    print(f"{'='*60}")
-    
-    model = BaselineSSM(ana_config)
-    params = count_parameters(model)
-    print(f"Parameters: {params:,}")
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    start_time = time.time()
-    history = run_training(ana_config, train_config, data_config, model_type='baseline')
-    train_time = time.time() - start_time
-    
-    final_loss = history['loss'][-1]
-    final_acc = history['needle_acc'][-1]
-    
-    print(f"\nFinal Loss: {final_loss:.4f}")
-    print(f"Final Needle Accuracy: {final_acc:.2%}")
-    print(f"Training Time: {train_time:.1f}s")
-    
-    results = {
-        'scale': scale,
-        'model_type': 'baseline',
-        'params': params,
-        'final_loss': final_loss,
-        'final_acc': final_acc,
-        'train_time': train_time,
-        'config': {
-            'd_model': scale_config['d_model'],
-            'state_dim': scale_config['state_dim'],
-            'num_layers': scale_config['num_layers'],
-        }
-    }
-    
-    results_path = os.path.join(output_dir, f'baseline_scaling_{scale}.json')
-    with open(results_path, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    return results
-
-def run_comparison_study(scales=['small', 'medium', 'large', 'xlarge'], output_dir='archive/comparison'):
-    os.makedirs(output_dir, exist_ok=True)
-    
-    base_config = {
-        'vocab_size': 50,
-        'min_noise': 10,
-        'max_noise': 50,
-        'dataset_size': 100,
-    }
-    
-    all_results = {
-        'ana': {},
-        'baseline': {},
-    }
-    
-    print("\n" + "="*70)
-    print("ANA vs BASELINE COMPARISON STUDY")
-    print("="*70)
-    
-    for scale in scales:
-        print(f"\n--- Testing scale: {scale} ---")
+    # Training loop with curriculum
+    for step in range(steps):
+        L = train_lengths[step % len(train_lengths)]
         
-        ana_results = run_scaling_study(base_config, scale, output_dir)
-        baseline_results = run_baseline_scaling_study(base_config, scale, output_dir)
+        if task == 'reverse':
+            train = torch.randint(1, vocab_size - 1, (batch_size, L))
+            targ = train.flip(dims=[1])
+        elif task == 'copy':
+            train = torch.randint(1, vocab_size - 1, (batch_size, L))
+            targ = train.clone()
+        else:
+            raise ValueError(f"Unknown task: {task}")
         
-        all_results['ana'][scale] = ana_results
-        all_results['baseline'][scale] = baseline_results
+        optimizer.zero_grad()
+        logits, _ = model(train)
+        loss = F.cross_entropy(logits.view(-1, vocab_size), targ.view(-1), ignore_index=0)
+        loss.backward()
+        optimizer.step()
+        
+        if verbose and (step + 1) % 100 == 0:
+            with torch.no_grad():
+                acc = (logits.argmax(-1) == targ).float().mean()
+            print(f"  Step {step+1}: loss={loss.item():.4f}, acc={100*acc:.0f}%")
     
-    print("\n" + "="*70)
-    print("COMPARISON SUMMARY")
-    print("="*70)
-    print(f"{'Scale':<12} {'ANA Params':>12} {'Baseline Params':>15} {'ANA Acc':>10} {'Baseline Acc':>12} {'Diff':>8}")
-    print("-"*70)
+    # Generalization test
+    model.eval()
+    results = {'train_lengths': train_lengths, 'test_lengths': test_lengths, 'generalization': {}}
     
-    for scale in scales:
-        ana = all_results['ana'][scale]
-        base = all_results['baseline'][scale]
-        ana_acc = ana['final_acc']
-        base_acc = base['final_acc']
-        diff = ana_acc - base_acc
-        print(f"{scale:<12} {ana['params']:>12,} {base['params']:>15,} {ana_acc:>10.2%} {base_acc:>12.2%} {diff:>8.2%}")
+    with torch.no_grad():
+        for L in test_lengths:
+            accs = []
+            for _ in range(20):
+                test = torch.randint(1, vocab_size - 1, (batch_size, L))
+                if task == 'reverse':
+                    test_targ = test.flip(dims=[1])
+                else:
+                    test_targ = test.clone()
+                
+                logits, _ = model(test)
+                acc = (logits.argmax(-1) == test_targ).float().mean()
+                accs.append(acc.item())
+            
+            k = L / max(train_lengths)
+            mean_acc = sum(accs) / len(accs)
+            results['generalization'][L] = {'k': k, 'accuracy': mean_acc}
+            
+            if verbose:
+                print(f"  Length {L} (k={k:.1f}): {100*mean_acc:.1f}%")
     
-    summary_path = os.path.join(output_dir, 'comparison_summary.json')
-    with open(summary_path, 'w') as f:
-        json.dump(all_results, f, indent=2)
+    return model, results
+
+
+def ablation_hololink(train_lengths=(2, 3, 4, 5, 6), test_lengths=(7, 8, 10), steps=200):
+    """Compare ANA with and without HoloLink."""
+    print("\n" + "="*60)
+    print("ABLATION: HoloLink")
+    print("="*60)
     
-    print(f"\nComparison saved to {summary_path}")
+    results = {}
     
-    return all_results
+    for use_holo in [True, False]:
+        name = "HoloLink ON" if use_holo else "HoloLink OFF"
+        print(f"\n--- {name} ---")
+        
+        _, res = train_curriculum(
+            train_lengths=train_lengths,
+            test_lengths=test_lengths,
+            steps=steps,
+            use_hololink=use_holo,
+            verbose=False
+        )
+        results[name] = res
+        
+        for L, data in res['generalization'].items():
+            print(f"  Length {L} (k={data['k']:.1f}): {100*data['accuracy']:.1f}%")
+    
+    return results
+
+
+def ablation_tracks(train_lengths=(2, 3, 4, 5, 6), test_lengths=(7, 8, 10), steps=200):
+    """Compare different track counts."""
+    print("\n" + "="*60)
+    print("ABLATION: Track Count")
+    print("="*60)
+    
+    results = {}
+    
+    for num_tracks in [1, 2, 3]:
+        print(f"\n--- {num_tracks} Track(s) ---")
+        
+        _, res = train_curriculum(
+            train_lengths=train_lengths,
+            test_lengths=test_lengths,
+            steps=steps,
+            track_count=num_tracks,
+            verbose=False
+        )
+        results[num_tracks] = res
+        
+        for L, data in res['generalization'].items():
+            print(f"  Length {L} (k={data['k']:.1f}): {100*data['accuracy']:.1f}%")
+    
+    return results
+
+
+def compare_baseline(train_lengths=(2, 3, 4, 5, 6), test_lengths=(7, 8, 10), steps=300):
+    """Compare ANA vs single-track baseline."""
+    print("\n" + "="*60)
+    print("COMPARISON: ANA vs BaselineSSM")
+    print("="*60)
+    
+    config = ANAConfig(d_model=32, vocab_size=10, state_dim=32, track_count=2)
+    
+    results = {'ana': {}, 'baseline': {}}
+    
+    for name, ModelClass in [('ANA', ANAModel), ('Baseline', BaselineSSM)]:
+        print(f"\n--- {name} ---")
+        model = ModelClass(config)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+        
+        for step in range(steps):
+            L = train_lengths[step % len(train_lengths)]
+            train = torch.randint(1, 9, (16, L))
+            targ = train.flip(dims=[1])
+            
+            optimizer.zero_grad()
+            logits, _ = model(train)
+            F.cross_entropy(logits.view(-1, 10), targ.view(-1)).backward()
+            optimizer.step()
+        
+        model.eval()
+        with torch.no_grad():
+            for L in test_lengths:
+                accs = []
+                for _ in range(20):
+                    test = torch.randint(1, 9, (16, L))
+                    test_targ = test.flip(dims=[1])
+                    logits, _ = model(test)
+                    acc = (logits.argmax(-1) == test_targ).float().mean()
+                    accs.append(acc.item())
+                mean_acc = sum(accs) / len(accs)
+                results[name.lower()][L] = mean_acc
+                print(f"  Length {L}: {100*mean_acc:.1f}%")
+    
+    return results
+
+
+def run_all_experiments():
+    """Run the full experiment suite."""
+    print("="*60)
+    print("ANA RESEARCH EXPERIMENTS")
+    print("="*60)
+    
+    # E1: Curriculum learning baseline
+    print("\n[E1] Curriculum Learning")
+    _, e1_results = train_curriculum(steps=300)
+    
+    # E2: HoloLink ablation
+    e2_results = ablation_hololink(steps=200)
+    
+    # E3: Track count ablation
+    e3_results = ablation_tracks(steps=200)
+    
+    # E4: Baseline comparison
+    e4_results = compare_baseline(steps=300)
+    
+    print("\n" + "="*60)
+    print("SUMMARY")
+    print("="*60)
+    print("Curriculum Learning (E1):")
+    for L, data in e1_results['generalization'].items():
+        print(f"  k={data['k']:.1f}: {100*data['accuracy']:.1f}%")
+    
+    return {
+        'curriculum': e1_results,
+        'hololink_ablation': e2_results,
+        'track_ablation': e3_results,
+        'baseline_comparison': e4_results
+    }
+
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="ANA Research Experiments")
-    parser.add_argument("--study", choices=['scaling', 'ablation', 'full', 'baseline_scaling', 'comparison'], default='ablation')
-    parser.add_argument("--scale", choices=['tiny', 'small', 'medium', 'large', 'xlarge', 'xxlarge', '125M'], default='small')
-    parser.add_argument("--ablation", choices=list(ABLATION_CONFIGS.keys()), default='full')
-    parser.add_argument("--output", type=str, default="archive/research")
-    
-    args = parser.parse_args()
-    
-    base_config = {
-        'vocab_size': 50,
-        'min_noise': 10,
-        'max_noise': 50,
-        'dataset_size': 2000,
-    }
-    
-    if args.study == 'scaling':
-        run_scaling_study(base_config, args.scale, args.output)
-    elif args.study == 'baseline_scaling':
-        run_baseline_scaling_study(base_config, args.scale, args.output)
-    elif args.study == 'comparison':
-        run_comparison_study(['small', 'medium', 'large'], args.output)
-    elif args.study == 'ablation':
-        run_ablation_study(base_config, args.ablation, args.output)
-    else:
-        run_full_study(args.output)
+    run_all_experiments()
