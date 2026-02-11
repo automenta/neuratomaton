@@ -294,6 +294,9 @@ class ANAModel(nn.Module):
         self.state_dim = config.state_dim
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         
+        # Position encoding for algorithmic reasoning
+        self.position_encoding = nn.Embedding(100, config.d_model)
+        
         self.layers = nn.ModuleList()
         for _ in range(config.num_layers):
             layer_dict = nn.ModuleDict()
@@ -324,16 +327,16 @@ class ANAModel(nn.Module):
         self.output_head = nn.Linear(config.d_model, config.vocab_size)
 
     def forward_parallel(self, input_ids, return_info=False, force_prob=0.0):
-        # NOTE: Thinking steps are not compatible with parallel scan in current form
-        # because the input at step t depends on thinking output at step t-1?
-        # Actually, thinking steps are "vertical" recursion.
-        # If max_thinking_steps > 0, we can't easily parallelize over time IF thinking duration varies.
-        # If thinking duration is fixed, we can parallelize.
-        # For now, if max_thinking_steps > 0, we fallback to sequential forward unless implemented.
         if self.config.max_thinking_steps > 0:
             return self.forward_sequential(input_ids, return_info, force_prob)
 
         x = self.embedding(input_ids)
+        
+        # Add position encoding
+        batch, seq_len = input_ids.shape
+        pos_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, seq_len)
+        pos_encoding = self.position_encoding(pos_ids)
+        x = x + pos_encoding
         info_log = []
 
         for i, layer in enumerate(self.layers):
@@ -404,6 +407,12 @@ class ANAModel(nn.Module):
 
     def forward_sequential(self, input_ids, return_info=False, force_prob=0.0):
         x = self.embedding(input_ids)
+        
+        # Add position encoding
+        batch, seq_len = input_ids.shape
+        pos_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, seq_len)
+        pos_encoding = self.position_encoding(pos_ids)
+        x = x + pos_encoding
         batch, seq_len, _ = x.shape
         
         h_states = [[None] * self.config.track_count for _ in range(self.config.num_layers)]
