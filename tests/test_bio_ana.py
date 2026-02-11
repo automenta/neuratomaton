@@ -21,7 +21,7 @@ class TestBioANAConfig:
         config = BioANAConfig()
         assert config.d_model == 128
         assert config.syntax_dim == 64
-        assert config.relaxation_iterations == 20
+        assert config.relaxation_iterations == 7
         assert config.spectral_radius == 0.99
     
     def test_variant_configs(self):

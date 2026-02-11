@@ -165,11 +165,6 @@ def run_wikitext_validation(
     
     print(f"Dataset: {len(tokens)} tokens, vocab size: {len(vocab)}")
     
-    # Create dataset
-    # Use subset for quick validation
-    subset_size = min(len(tokens), 200000)  # 200K tokens for quick test
-    tokens = tokens[:subset_size]
-    
     train_size = int(0.9 * len(tokens))
     train_tokens = tokens[:train_size]
     val_tokens = tokens[train_size:]
@@ -296,6 +291,8 @@ if __name__ == '__main__':
                         help='Learning rate')
     parser.add_argument('--output', type=str, default='results/wikitext2_validation',
                         help='Output directory')
+    parser.add_argument('--data-path', type=str, default='data/wikitext-2/train.txt',
+                        help='Path to training data')
     
     args = parser.parse_args()
     
@@ -307,6 +304,7 @@ if __name__ == '__main__':
         num_epochs=args.epochs,
         lr=args.lr,
         output_dir=args.output,
+        data_path=args.data_path,
     )
     
     print(f"\nStatus: {results['status']}")
