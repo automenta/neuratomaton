@@ -239,8 +239,9 @@ class HoloLink(nn.Module):
         self.k_proj = nn.Linear(input_dim, self.key_dim, bias=False)
         self.v_proj = nn.Linear(input_dim, self.d_model, bias=False)
         
-        # Learned binding strength (starts small, learns to increase)
-        # Using softplus to ensure positive
+        self.out_proj = nn.Linear(self.d_model, self.d_model)
+        self.norm = nn.LayerNorm(self.d_model)
+        
         self.binding_strength = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, x_t, h_t, M_prev):
@@ -254,7 +255,6 @@ class HoloLink(nn.Module):
         k_t = torch.nn.functional.normalize(k_t, p=2, dim=-1)
         v_t = self.v_proj(h_t)
         
-        # Apply binding strength
         strength = F.softplus(self.binding_strength)
         update = strength * torch.bmm(k_t.unsqueeze(2), v_t.unsqueeze(1))
 
@@ -264,6 +264,8 @@ class HoloLink(nn.Module):
         q_t = torch.nn.functional.normalize(q_t, p=2, dim=-1)
         
         retrieved = torch.bmm(q_t.unsqueeze(1), M_t).squeeze(1)
+        retrieved = self.out_proj(retrieved)
+        retrieved = self.norm(retrieved)
         return retrieved, M_t
 
     def forward_sequence(self, x, h):
@@ -271,7 +273,6 @@ class HoloLink(nn.Module):
         k = torch.nn.functional.normalize(k, p=2, dim=-1)
         v = self.v_proj(h)
 
-        # Apply binding strength
         strength = F.softplus(self.binding_strength)
         update = strength * torch.matmul(k.unsqueeze(-1), v.unsqueeze(-2))
 
@@ -281,6 +282,8 @@ class HoloLink(nn.Module):
         q = torch.nn.functional.normalize(q, p=2, dim=-1)
 
         retrieved = torch.matmul(q.unsqueeze(-2), M_seq).squeeze(-2)
+        retrieved = self.out_proj(retrieved)
+        retrieved = self.norm(retrieved)
         return retrieved, M_seq
 
 class ANAModel(nn.Module):

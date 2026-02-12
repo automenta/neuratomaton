@@ -360,14 +360,22 @@ def train_with_eqprop():
     print('='*60)
     print('ANA with EqProp (BPTT through equilibrium)')
     print('='*60)
+    print(f'Device: {device}')
+    print(f'Goal: Test if EqProp achieves ~94% (HoloLink-only baseline)')
+    print()
     
     model = EqPropANA(vocab_size=vocab_size, d_model=64, hidden_dim=128, max_steps=10).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     
-    curriculum = [(1, 500), (2, 500), (4, 500), (6, 500), (8, 500), (10, 500), (12, 500)]
-    
+    print(f'Model parameters: {sum(p.numel() for p in model.parameters()):,}')
     print()
+    
+    curriculum = [(1, 200), (2, 200), (4, 200), (6, 200), (8, 200), (10, 200), (12, 300)]
+    
+    all_results = []
     for pairs, steps in curriculum:
+        print(f'\n--- Training on {pairs} KV pairs ({steps} steps) ---')
+        losses = []
         for step in range(steps):
             bx, by = gen(32, pairs)
             bx, by = bx.to(device), by.to(device)
@@ -377,13 +385,39 @@ def train_with_eqprop():
             loss = F.cross_entropy(logits[:, -1, :], by)
             loss.backward()
             optimizer.step()
+            losses.append(loss.item())
+            
+            if (step + 1) % 50 == 0:
+                avg_loss = sum(losses[-50:]) / 50
+                print(f'  Step {step+1:4d}: loss={avg_loss:.4f}')
         
-        acc = evaluate(model, pairs, n=20)
+        acc = evaluate(model, pairs, n=30)
+        all_results.append((pairs, acc))
         status = '✅' if acc > 0.8 else ('⚠️' if acc > 0.5 else '❌')
-        print(f'{pairs} pairs: {100*acc:.1f}% {status}')
+        print(f'  >>> {pairs} pairs: {100*acc:.1f}% {status}')
     
-    final = evaluate(model, 12, n=50)
-    print(f'\nFinal at 12 pairs: {100*final:.1f}%')
+    print('\n' + '='*60)
+    print('RESULTS SUMMARY')
+    print('='*60)
+    print(f'{"Pairs":>6} | {"Accuracy":>10}')
+    print('-'*20)
+    for pairs, acc in all_results:
+        print(f'{pairs:>6} | {100*acc:>9.1f}%')
+    
+    final = evaluate(model, 12, n=100)
+    print('-'*20)
+    print(f'{"Final":>6} | {100*final:>9.1f}%')
+    
+    print()
+    if final > 0.9:
+        print('>>> BREAKTHROUGH: EqProp achieves HoloLink-level performance! <<<')
+    elif final > 0.7:
+        print('>>> PROMISING: EqProp significantly outperforms backprop (8-9%) <<<')
+    elif final > 0.3:
+        print('>>> PARTIAL: EqProp better than backprop but not optimal <<<')
+    else:
+        print('>>> FAILED: EqProp does not solve the interference problem <<<')
+    print('='*60)
 
 
 if __name__ == "__main__":
