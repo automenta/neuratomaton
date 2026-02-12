@@ -187,9 +187,56 @@ Input → Embedding → Position Encoding
 | Curriculum Learning | Training order on data matters | We show order on components matters |
 | Progressive Training | Train layers progressively | We train modules progressively |
 | Gradient Surgery | Reduce multi-task gradient conflicts | We show intra-task component conflicts |
-| EqProp | Local learning signals | Alternative to staged training |
+| EqProp (bioplausible) | Local learning via contrastive Hebbian | Alternative to staged training |
 
 **Novel Contribution:** First demonstration that component-level training order can cause 10x performance differences in modular architectures.
+
+---
+
+## EqProp Investigation Summary
+
+### What is EqProp?
+Equilibrium Propagation uses local contrastive Hebbian learning instead of global backprop:
+1. **Free Phase**: Network relaxes to equilibrium without target
+2. **Nudged Phase**: Output weakly clamped toward target
+3. **Weight Update**: ΔW ∝ (h_nudged ⊗ h_nudged - h_free ⊗ h_free)
+
+### EqProp Sanity Tests (bioplausible library)
+
+| Test | Task | Result |
+|------|------|--------|
+| Simple Classification | First feature threshold | 92% (works!) |
+| XOR | Non-linear classification | ~50% (partial) |
+| MNIST | Image classification | ~11% (needs tuning) |
+| Associative Memory | KV recall | ~2% (complex task) |
+
+### EqProp vs Two-Phase Comparison
+
+| Method | Pros | Cons | Associative Memory |
+|--------|------|------|-------------------|
+| **Two-Phase Training** | Simple, fast, proven | Requires manual staging | **99.6%** |
+| **EqProp** | Theoretically elegant, local learning | Slow (many equilibrium steps), sensitive to hyperparams | ~2% |
+
+### Key Findings
+
+1. **EqProp works for simple tasks** - Verified on simple classification (92%)
+2. **EqProp is computationally expensive** - Requires many equilibrium iterations per sample
+3. **EqProp needs careful tuning** - Beta, equilibrium_steps, learning_rate are critical
+4. **Two-Phase is more practical** - Simpler, faster, works reliably
+
+### Why EqProp Struggles with Associative Memory?
+
+1. **Sequence complexity**: Task requires tracking multiple KV pairs over time
+2. **Memory overhead**: Each training step requires 2 full equilibrium relaxations
+3. **Embedding mismatch**: EqProp core trained with contrastive, embeddings with backprop
+4. **Hyperparameter sensitivity**: Small beta or few steps → no learning
+
+### Open Questions
+
+1. Can EqProp work with better hyperparameter tuning?
+2. Would pure EqProp (embeddings + core) help?
+3. Is there a hybrid approach (EqProp + Two-Phase)?
+4. Does EqProp scale to larger models?
 
 ---
 
