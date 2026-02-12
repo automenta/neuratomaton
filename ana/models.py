@@ -16,18 +16,17 @@ def parallel_scan_cumsum(u, log_alpha, beta):
     where C_t = cumsum(log(alpha_t))
           S_t = cumsum(beta_t * u_t * exp(-C_t))
     
-    Args:
-        u: [batch, seq, dim] - input projections
-        log_alpha: [batch, seq, dim] - log of alpha values
-        beta: [batch, seq, dim] - beta values
-    
-    Returns:
-        h: [batch, seq, dim] - hidden states
+    Numerically stable version using float32 for internal computation.
     """
-    C = torch.cumsum(log_alpha.to(torch.float64), dim=1)
-    term = beta.to(torch.float64) * u.to(torch.float64) * torch.exp(-C)
+    log_alpha_f32 = log_alpha.float().clamp(max=0)  # alpha <= 1, so log_alpha <= 0
+    beta_f32 = beta.float()
+    u_f32 = u.float()
+    
+    C = torch.cumsum(log_alpha_f32, dim=1)
+    term = beta_f32 * u_f32 * torch.exp(-C)
     S = torch.cumsum(term, dim=1)
     h = torch.exp(C) * S
+    
     return h.to(u.dtype)
 
 
