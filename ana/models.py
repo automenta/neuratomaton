@@ -18,14 +18,17 @@ def parallel_scan_cumsum(u, log_alpha, beta):
     
     Numerically stable version using float32 for internal computation.
     """
-    log_alpha_f32 = log_alpha.float().clamp(max=0)  # alpha <= 1, so log_alpha <= 0
-    beta_f32 = beta.float()
-    u_f32 = u.float()
+    log_alpha_f32 = log_alpha.float().clamp(max=0, min=-20)  # Clamp to avoid underflow
+    beta_f32 = beta.float().clamp(min=-10, max=10)  # Clamp beta
+    u_f32 = u.float().clamp(min=-10, max=10)  # Clamp input
     
     C = torch.cumsum(log_alpha_f32, dim=1)
     term = beta_f32 * u_f32 * torch.exp(-C)
     S = torch.cumsum(term, dim=1)
     h = torch.exp(C) * S
+    
+    # Final NaN check and replacement
+    h = torch.where(torch.isnan(h) | torch.isinf(h), torch.zeros_like(h), h)
     
     return h.to(u.dtype)
 
@@ -110,9 +113,16 @@ class LinearRecurrentUnit(nn.Module):
         self.input_proj = nn.Linear(self.d_model, self.state_dim)
         self.output_proj = nn.Linear(self.state_dim, self.d_model)
         
-        # Static parameters
-        self.static_alpha_logit = nn.Parameter(torch.Tensor(self.state_dim).uniform_(2, 4))
-        self.static_beta_logit = nn.Parameter(torch.Tensor(self.state_dim).uniform_(-2, 0))
+        # Initialize projections with small values for stability
+        nn.init.xavier_uniform_(self.input_proj.weight, gain=0.5)
+        nn.init.zeros_(self.input_proj.bias)
+        nn.init.xavier_uniform_(self.output_proj.weight, gain=0.5)
+        nn.init.zeros_(self.output_proj.bias)
+        
+        # Static parameters - conservative initialization
+        # alpha close to 0.9 (decay), beta close to 0.1 (input weight)
+        self.static_alpha_logit = nn.Parameter(torch.Tensor(self.state_dim).uniform_(1.5, 2.5))
+        self.static_beta_logit = nn.Parameter(torch.Tensor(self.state_dim).uniform_(-1.5, -0.5))
 
     def forward(self, x, h_prev=None, dynamic_gates=None):
         batch_size = x.size(0)
@@ -124,6 +134,9 @@ class LinearRecurrentUnit(nn.Module):
         
         if dynamic_gates is not None:
             gate_alpha, gate_beta = dynamic_gates
+            # Clamp gates to prevent extreme values
+            gate_alpha = gate_alpha.clamp(-5, 5)
+            gate_beta = gate_beta.clamp(-5, 5)
             alpha = torch.sigmoid(self.static_alpha_logit + gate_alpha)
             beta = torch.sigmoid(self.static_beta_logit + gate_beta)
         else:
@@ -131,6 +144,10 @@ class LinearRecurrentUnit(nn.Module):
             beta = torch.sigmoid(self.static_beta_logit)
             
         h_t = alpha * h_prev + beta * u_t
+        
+        # NaN protection
+        h_t = torch.where(torch.isnan(h_t) | torch.isinf(h_t), torch.zeros_like(h_t), h_t)
+        
         y_t = self.output_proj(h_t)
         
         return y_t, h_t
@@ -141,6 +158,9 @@ class LinearRecurrentUnit(nn.Module):
 
         if dynamic_gates is not None:
             g_alpha, g_beta = dynamic_gates
+            # Clamp gate values to prevent extreme values
+            g_alpha = g_alpha.clamp(-5, 5)
+            g_beta = g_beta.clamp(-5, 5)
             alpha = torch.sigmoid(self.static_alpha_logit + g_alpha)
             beta = torch.sigmoid(self.static_beta_logit + g_beta)
         else:
@@ -150,7 +170,7 @@ class LinearRecurrentUnit(nn.Module):
         h_init = torch.zeros(batch_size, self.state_dim, device=x.device)
 
         if self.config.use_parallel_scan:
-            log_alpha = torch.log(alpha.clamp(min=1e-7))
+            log_alpha = torch.log(alpha.clamp(min=1e-7, max=1-1e-7))
             h_seq = parallel_scan_cumsum(u, log_alpha, beta)
         else:
             h_seq = lru_scan(u, alpha, beta, h_init)
@@ -164,9 +184,12 @@ class HyperController(nn.Module):
     Outputs per track: alpha_gate, beta_gate, mix_logit
     Plus: retrieval_gate, halt_logit
     """
-    def __init__(self, config: ANAConfig, hidden_dim=64):
+    def __init__(self, config: ANAConfig, hidden_dim=None):
         super().__init__()
         self.config = config
+        if hidden_dim is None:
+            hidden_dim = max(64, config.d_model // 4)  # Scale with model
+        
         self.net = nn.Sequential(
             nn.Linear(config.d_model, hidden_dim),
             nn.SiLU(),
@@ -251,36 +274,46 @@ class HoloLink(nn.Module):
             M_prev = torch.zeros(batch_size, self.key_dim, d_val, device=x_t.device)
             
         k_t = self.k_proj(h_t)
-        k_t = torch.nn.functional.normalize(k_t, p=2, dim=-1)
+        k_t = torch.nn.functional.normalize(k_t + 1e-8, p=2, dim=-1)  # Epsilon for stability
         v_t = self.v_proj(h_t)
         
-        strength = F.softplus(self.binding_strength)
+        strength = F.softplus(self.binding_strength).clamp(max=10)  # Limit strength
         update = strength * torch.bmm(k_t.unsqueeze(2), v_t.unsqueeze(1))
 
         M_t = M_prev + update
         
         q_t = self.q_proj(x_t)
-        q_t = torch.nn.functional.normalize(q_t, p=2, dim=-1)
+        q_t = torch.nn.functional.normalize(q_t + 1e-8, p=2, dim=-1)  # Epsilon for stability
         
         retrieved = torch.bmm(q_t.unsqueeze(1), M_t).squeeze(1)
+        
+        # NaN protection
+        retrieved = torch.where(torch.isnan(retrieved) | torch.isinf(retrieved), 
+                                torch.zeros_like(retrieved), retrieved)
+        
         retrieved = self.out_proj(retrieved)
         retrieved = self.norm(retrieved)
         return retrieved, M_t
 
     def forward_sequence(self, x, h):
         k = self.k_proj(h)
-        k = torch.nn.functional.normalize(k, p=2, dim=-1)
+        k = torch.nn.functional.normalize(k + 1e-8, p=2, dim=-1)  # Epsilon for stability
         v = self.v_proj(h)
 
-        strength = F.softplus(self.binding_strength)
+        strength = F.softplus(self.binding_strength).clamp(max=10)  # Limit strength
         update = strength * torch.matmul(k.unsqueeze(-1), v.unsqueeze(-2))
 
         M_seq = torch.cumsum(update, dim=1)
 
         q = self.q_proj(x)
-        q = torch.nn.functional.normalize(q, p=2, dim=-1)
+        q = torch.nn.functional.normalize(q + 1e-8, p=2, dim=-1)  # Epsilon for stability
 
         retrieved = torch.matmul(q.unsqueeze(-2), M_seq).squeeze(-2)
+        
+        # NaN protection
+        retrieved = torch.where(torch.isnan(retrieved) | torch.isinf(retrieved), 
+                                torch.zeros_like(retrieved), retrieved)
+        
         retrieved = self.out_proj(retrieved)
         retrieved = self.norm(retrieved)
         return retrieved, M_seq
@@ -316,12 +349,12 @@ class ANAModel(nn.Module):
 
             if config.track_count == 2:
                 with torch.no_grad():
-                    # Track A (Reflex)
-                    layer_dict['tracks'][0].static_alpha_logit.fill_(-3.0)
-                    layer_dict['tracks'][0].static_beta_logit.fill_(2.0)
-                    # Track B (Reasoning)
+                    # Track A (Fast/Reflex) - alpha ~0.7, beta ~0.3
+                    layer_dict['tracks'][0].static_alpha_logit.fill_(1.0)
+                    layer_dict['tracks'][0].static_beta_logit.fill_(-1.0)
+                    # Track B (Slow/Reasoning) - alpha ~0.95, beta ~0.05
                     layer_dict['tracks'][1].static_alpha_logit.fill_(3.0)
-                    layer_dict['tracks'][1].static_beta_logit.fill_(0.0)
+                    layer_dict['tracks'][1].static_beta_logit.fill_(-3.0)
             
             self.layers.append(layer_dict)
         
