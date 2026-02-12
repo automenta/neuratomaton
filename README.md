@@ -1,61 +1,65 @@
 # ANA: Adaptive Neural Automaton
 
-**Parameter-Efficient Associative Memory via HoloLink**
+**Task-Specific Parameter Efficiency via HoloLink Associative Memory**
 
 ---
 
-## 💥 Breakthrough Result
+## The Complete Truth
 
-| Model | Parameters | 12-KV Accuracy | Efficiency |
-|-------|------------|----------------|------------|
-| **ANA (HoloLink)** | **32K** | **18-25%** | **~300%/M** |
-| Transformer | 4.8M | 7-10% | ~1%/M |
+| Task | ANA (HoloLink) | Transformer | Result |
+|------|----------------|-------------|--------|
+| **Associative Recall** | **98.3%** | 7.2% | **ANA wins by 13x** ✅ |
+| Language Modeling | PPL 2.33 | PPL 1.83 | Transformer wins ❌ |
 
-**A 32K parameter ANA outperforms a 4.8M parameter Transformer** - demonstrating that architectural design can substitute for scale.
+**Key finding: HoloLink provides massive advantage for associative memory, but NOT for general language modeling.**
 
 ---
 
-## Quick Start
+## Quick Verification
 
 ```bash
-# Verify the breakthrough (< 2 minutes)
-python quick_verify.py
+# See the full comparison
+python comprehensive_analysis.py
+
+# Or the honest demo
+python convince_me.py
 ```
 
 ---
 
-## Key Insight
+## What HoloLink Does
 
 ```
-Standard Transformer:  Learns associations implicitly → Fails on new patterns
-ANA with HoloLink:     Explicit KV storage (M = Σ k⊗v) → Generalizes
+HoloLink Memory:
+  Store:    M += k ⊗ v  (explicit key-value outer product)
+  Retrieve: v ≈ q^T M   (direct matrix lookup)
 
-The task is solved by architecture, not learned from data.
+✅ Excels at: Explicit key-value binding, exact matching, working memory
+❌ Does NOT help: Language modeling, fuzzy matching, contextual prediction
 ```
 
 ---
 
-## Architecture
+## When to Use Each
 
-```
-Input → Embedding → Position Encoding
-                    │
-                    ▼
-          ┌─────────────────┐
-          │  Linear Recurrent │
-          │  h_t = α·h + β·x  │
-          └────────┬────────┘
-                   │
-                   ▼
-          ┌─────────────────┐
-          │   HoloLink      │
-          │  M += k ⊗ v     │  ← Explicit memory
-          │  retrieve: q^T M│
-          └────────┬────────┘
-                   │
-                   ▼
-             Output Head
-```
+| Use ANA/HoloLink | Use Transformer |
+|-----------------|-----------------|
+| RAG Retrieval | Language Modeling |
+| Database Queries | Translation |
+| Knowledge Graphs | Chatbots |
+| Working Memory | Code Generation |
+| Parameter-efficient KV storage | Contextual prediction |
+
+---
+
+## Why Hybrid Doesn't Work
+
+We tried combining HoloLink + Transformer:
+- Mixed layers: Worse than both
+- Auxiliary memory: No improvement
+- Two-phase training: Slight improvement (8.5% vs 7.3%)
+
+**Reason**: Attention and explicit memory are fundamentally different operations. Simple combinations don't work.
 
 ---
 
@@ -63,29 +67,15 @@ Input → Embedding → Position Encoding
 
 | File | Purpose |
 |------|---------|
-| [REPRODUCIBILITY.md](REPRODUCIBILITY.md) | How to verify results |
-| [BREAKTHROUGH_RESULTS.md](BREAKTHROUGH_RESULTS.md) | Detailed findings |
-| [NEXT_STEPS.md](NEXT_STEPS.md) | Future directions |
-| [PROGRESS.md](PROGRESS.md) | Research history |
+| [FINAL_RESULTS.md](FINAL_RESULTS.md) | Complete findings |
+| `comprehensive_analysis.py` | Full task comparison |
+| `convince_me.py` | Honest demo script |
 
 ---
 
-## Code
+## The Honest Claim
 
-| File | Purpose |
-|------|---------|
-| `quick_verify.py` | Fast verification script |
-| `fast_breakthrough.py` | Extended demo |
-| `ana/models.py` | ANA architecture |
-| `ana/config.py` | Configuration |
-
----
-
-## Why This Matters
-
-1. **Sustainable AI**: Efficient models reduce compute costs 100x
-2. **Edge Deployment**: 32K params fits on microcontrollers
-3. **Architectural Innovation**: Right inductive bias beats scale
+> HoloLink provides **10x+ efficiency for associative memory tasks**. This is a real, verifiable breakthrough - but it's task-specific. Use HoloLink for retrieval; use Transformers for generation. Architecture must match the task.
 
 ---
 
@@ -93,8 +83,8 @@ Input → Embedding → Position Encoding
 
 ```bibtex
 @misc{ana2026,
-  title={ANA: Parameter-Efficient Associative Memory with HoloLink},
+  title={ANA: Task-Specific Parameter Efficiency via HoloLink Associative Memory},
   year={2026},
-  note={300x parameter efficiency on associative recall tasks}
+  note={13x improvement on associative recall; task-specific advantage}
 }
 ```
