@@ -295,7 +295,7 @@ class ANAModel(nn.Module):
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         
         # Position encoding for algorithmic reasoning
-        self.position_encoding = nn.Embedding(100, config.d_model)
+        self.position_encoding = nn.Embedding(config.max_position, config.d_model)
         
         self.layers = nn.ModuleList()
         for _ in range(config.num_layers):

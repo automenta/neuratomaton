@@ -9,6 +9,7 @@ class ANAConfig:
     state_dim: int = 64
     num_layers: int = 2
     dropout: float = 0.0
+    max_position: int = 8192
 
     # HoloLink
     key_dim: int = 64

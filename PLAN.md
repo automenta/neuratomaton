@@ -5,11 +5,15 @@
 
 ## Executive Summary
 
-**Core Finding**: ANA excels at associative recall (+19.5% synergy) and simple sequential tasks (100% copy), but fails at tasks requiring bidirectional reasoning (12-25% reversal).
+**Core Finding**: HoloLink achieves 94.4% on associative recall WITHOUT controller. Controller trained with backprop DESTROYS this to 8-9%.
 
-**Winning Strategy**: Leverage proven strengths (HoloLink associative memory, multi-track temporal processing) for applications where they provide clear advantages, avoiding known failure modes.
+**The Problem**: Backprop causes controller to learn interference patterns that corrupt HoloLink's memory signal.
 
-**Research Phases**: Optimization → Validation → Publication
+**The Solution**: Equilibrium Propagation - local learning where each module learns independently from energy differences.
+
+**Breakthrough Opportunity**: EqProp + HoloLink has NEVER been published. If it works, it's a novel contribution to both bio-plausible learning AND associative memory research.
+
+**Research Phases**: EqProp Validation → Synergy Experiments → Publication
 
 ---
 
@@ -134,21 +138,129 @@ At the end of each week, ask:
 
 | Result | Evidence | Implication |
 |--------|----------|-------------|
+| **HoloLink: 94.4% at 12 KV pairs** | Without controller, frozen controller | Core memory module works |
 | **Copy Task: 100%** | Full generalization to L12 | Sequential processing works perfectly |
 | **HoloLink Synergy: +19.5%** | 12 KV pairs, paper_draft.md | Associative memory is real advantage |
 | **Parameter Efficiency: 2-3x** | 10-30K params vs Transformer | Edge deployment viable |
 | **EqProp Integration: ✅** | XOR convergence <400 iters | Bio-plausible training works |
+| **ANA v3 Reverse: 100%** | Stack + Reverse Read | Algorithmic read patterns = generalization |
 
 ### What Fails ❌
 
 | Result | Evidence | Root Cause | Action |
 |--------|----------|------------|--------|
-| **Reversal: 12-25%** | Position-specific memorization | Causal/autoregressive limitation | ACCEPT - don't fix |
-| **Bio-ANA: Abandoned** | Too slow for practical training | EqProp overhead | Skip bio-plausible for now |
-| **Algorithm Learning: Limited** | ANALYSIS.md | Memorization over generalization | Focus on ICL instead |
+| **Controller + Backprop: 8-9%** | Interference destroys HoloLink | Controller learns to output noise | **USE EQPROP** |
+| **Standard ANA Reversal: 12-25%** | Position-specific memorization | No explicit memory + wrong inductive bias | SEE v3 solution |
+| **Bio-ANA: Slow** | EqProp overhead 10-100x | Relaxation iterations | Use for research, not production |
+| **Implicit Algorithm Learning** | ANALYSIS.md | Memorization over generalization | Use explicit memory structures |
 
-### Key Insight
-> ANA's architecture is optimized for **forward sequential processing with associative recall**, NOT bidirectional reasoning. Play to this strength.
+### Key Insights
+
+> **CRITICAL: Controller trained with backprop DESTROYS HoloLink's 94% performance. The controller learns to interfere, not help.**
+
+> **SOLUTION: EqProp's local learning could allow each module to learn independently, avoiding interference.**
+
+> **BREAKTHROUGH: Algorithmic generalization requires EXPLICIT MEMORY + ALGORITHMIC READ PATTERNS, not learned weights alone.**
+
+---
+
+## EqProp Experiments: Breakthrough Opportunity
+
+### The Controller Interference Problem (CRITICAL DISCOVERY)
+
+**Background**: We found that backprop training DESTROYS HoloLink's performance:
+
+| Configuration | 12-KV Accuracy | Status |
+|--------------|----------------|--------|
+| HoloLink Only (no controller) | **94.4% ± 1.2%** | ✅ WORKS |
+| Controller frozen (pass-through) | **94.0%** | ✅ WORKS |
+| Controller trainable (any init) | **8-9%** | ❌ FAILS |
+
+**Root Cause**: The controller has 5+ outputs (α_gate, β_gate, mix, ret_gate, halt). Gradient descent finds a local minimum where the controller outputs noise that overwhelms HoloLink's signal. **The controller learns to interfere, not help.**
+
+### Why EqProp Could Solve This
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    THE INTERFERENCE PROBLEM                              │
+│                                                                          │
+│  BACKPROP:                                                               │
+│    Loss → ∂L/∂output → chain rule through ALL layers                     │
+│    Problem: Controller gradients CONTAMINATE HoloLink gradients          │
+│    Result: Controller learns to output noise, HoloLink degraded          │
+│                                                                          │
+│  EQPROP:                                                                 │
+│    E_free = energy at equilibrium (no target)                            │
+│    E_nudged = energy with weak target clamp                              │
+│    ∂L/∂θ_local ≈ (E_nudged - E_free) at THIS LAYER ONLY                  │
+│                                                                          │
+│  KEY INSIGHT: Each module learns from LOCAL energy differences           │
+│  → Controller cannot interfere with HoloLink's learning                  │
+│  → HoloLink maintains its 94%+ performance                               │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Status
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `ana/eqprop_ana.py` | Energy-based SSM + HoloLink | Complete |
+| `ana/eqprop_seq.py` | Spectral-norm stabilized EqProp | Complete |
+| `ana/bioplausible_ana.py` | Integration with bioplausible library | Complete |
+
+### EqProp Research Questions
+
+| Question | Why Important | Expected Outcome |
+|----------|---------------|------------------|
+| Does EqProp preserve HoloLink's 94%? | Tests if local learning avoids interference | If yes: **BREAKTHROUGH** |
+| Can controller help with EqProp? | Controller may now learn to enhance, not interfere | Synergy > 94% |
+| What's optimal relaxation depth? | Efficiency vs accuracy tradeoff | Find n_iterations sweet spot |
+
+### Novel Contribution: EqProp + Associative Memory
+
+**This combination has NEVER been published.** The intersection of:
+1. Equilibrium Propagation (bio-plausible, local learning)
+2. Holographic associative memory (HoloLink, outer-product binding)
+3. Multi-track SSM (adaptive temporal processing)
+
+**Why It's Novel**: 
+- EqProp papers focus on classification, not memory
+- Memory papers use backprop, not bio-plausible learning
+- No prior work combines EqProp + associative memory + SSM
+
+**Publication targets**: 
+- NeurIPS/ICLR (bio-ML track)
+- CogSci / Bernstein Conference (computational neuroscience)
+- ICLR Workshop on Biologically Plausible Learning
+
+---
+
+## ANA v3: Algorithmic Generalization Breakthrough
+
+### Discovery
+
+The v3 experiments (`ana/v2/experiments/`) revealed a fundamental insight:
+
+```
+THE ALGORITHM IS IN THE READ PATTERN, NOT THE LEARNED WEIGHTS
+
+Standard ANA:     h_t = f(x_t, h_{t-1})     → learns position mappings
+ANA v3:           output = stack[L-1-t]     → implements reversal algorithm
+```
+
+### Results
+
+| Architecture | Generalization to L12 | Method |
+|--------------|----------------------|--------|
+| Standard ANA | 12% | Implicit memory in hidden states |
+| ReverseNet (bidirectional) | 25% | Bidirectional LSTM |
+| **ANA v3 (Stack + Reverse Read)** | **75-100%** | Explicit stack + algorithmic read |
+
+### Implications for Future Research
+
+1. **Explicit Memory Structures**: SSMs benefit from explicit, addressable memory
+2. **Algorithmic Read Patterns**: Task-specific read patterns enable generalization
+3. **Learnable Read Patterns**: Future direction - can we LEARN the read pattern?
 
 ---
 
@@ -401,11 +513,107 @@ for L in [512, 1024, 2048, 4096, 8192]:
 
 | Condition | Action | Don't |
 |-----------|--------|-------|
-| ✅ E1 synergy > 10% | Continue to Phase 2 | Don't tune for more |
+| ✅ E1 synergy > 10% | Continue to Phase 1.5 (EqProp) | Don't tune for more |
 | ❌ E1 synergy < 10% | Skip to E3, focus on efficiency | Don't debug HoloLink |
 | ✅ E2 shows scaling | Document capacity | Don't push past limit |
 | ✅ E3 O(1) memory | Efficiency validated | Don't optimize further |
 | ❌ All fail | Write position paper | Don't chase failures |
+
+---
+
+## Phase 1.5: EqProp Validation (NEW - HIGH IMPACT)
+
+**Goal**: Test if EqProp preserves/enhances HoloLink synergy
+
+**Why This Matters**: EqProp could solve the gradient interference problem that makes standard backprop suboptimal for modular architectures.
+
+### E-Eq1: EqProp Synergy Test (4 hours)
+
+**Protocol**:
+```python
+# Compare EqProp vs Backprop on associative recall
+from ana.eqprop_ana import EqPropANA, EqPropConfig, train_with_eqprop
+from ana import ANAConfig, ANAModel
+
+# Train EqProp ANA
+config_eqprop = EqPropConfig(vocab_size=60, d_model=64, state_dim=64, n_iterations=20)
+model_eqprop = EqPropANA(config_eqprop)
+
+# Train standard ANA (baseline)
+config_standard = ANAConfig(vocab_size=60, d_model=64, state_dim=64)
+model_standard = ANAModel(config_standard)
+
+# Compare synergy at 12 KV pairs
+```
+
+**Success Criteria**:
+| Metric | EqProp Target | Backprop Baseline | Implication |
+|--------|---------------|-------------------|-------------|
+| Synergy at 12 pairs | >25% | 19.5% | **BREAKTHROUGH** |
+| Synergy at 12 pairs | 15-25% | 19.5% | Promising, continue |
+| Synergy at 12 pairs | <15% | 19.5% | EqProp not helpful here |
+
+**If Success**: Proceed to E-Eq2 (ICL with EqProp)
+**If Failure**: Document, skip EqProp, proceed with standard training
+
+### E-Eq2: EqProp Generalization Test (4 hours)
+
+**Question**: Does local learning improve generalization?
+
+**Protocol**:
+```python
+# Train on KV pairs 1-8, test on 10-16
+# Compare EqProp vs Backprop generalization gap
+train_pairs = [1, 2, 4, 6, 8]
+test_pairs = [10, 12, 14, 16]
+
+# Measure: test_accuracy / train_accuracy (closer to 1.0 = better generalization)
+```
+
+**Expected**: EqProp should generalize better due to local learning signals
+
+### E-Eq3: Relaxation Depth Study (2 hours)
+
+**Question**: What's the optimal n_iterations?
+
+**Protocol**:
+```python
+for n_iter in [5, 10, 20, 40]:
+    accuracy = evaluate_eqprop(model, n_iterations=n_iter)
+    time_per_step = measure_time(model, n_iterations=n_iter)
+    print(f"n_iter={n_iter}: acc={accuracy:.2%}, time={time_per_step:.1f}ms")
+```
+
+**Goal**: Find sweet spot between accuracy and efficiency
+
+### Phase 1.5 Decision Gate
+
+| Outcome | Action | Publication Path |
+|---------|--------|------------------|
+| ✅ EqProp + Controller > HoloLink-only | Full EqProp breakthrough paper | NeurIPS/ICLR main |
+| ✅ EqProp + Controller ≈ HoloLink-only (94%) | EqProp enables modularity paper | NeurIPS/ICLR (bio-ML track) |
+| ⚠️ EqProp generalization > Backprop | Methods paper | Workshop paper |
+| ❌ EqProp underperforms | Document findings | Use HoloLink-only architecture |
+
+### What Success Looks Like
+
+**BREAKTHROUGH (NeurIPS/ICLR Main)**:
+```
+Table 1: Associative Recall Performance at 12 KV Pairs
+
+| Architecture | Accuracy | Controller Status |
+|--------------|----------|-------------------|
+| HoloLink-only | 94.4% | N/A |
+| ANA + Backprop | 8.9% | Trainable |
+| ANA + EqProp | 94%+ | Trainable, LEARNS TO HELP |
+
+Conclusion: EqProp enables modular learning where backprop fails.
+```
+
+**NOVEL CONTRIBUTION**:
+1. First demonstration that EqProp solves gradient interference in modular architectures
+2. First combination of EqProp with associative memory
+3. Evidence that local learning enables multi-component systems
 
 ---
 
@@ -546,16 +754,27 @@ Time Limits:
 - ICL > 15% over baselines
 - Memory > 10x savings
 - Performance > 30K tok/s optimized
+- **EqProp synergy > 25%** (bio-ML track)
 
 ### Strong Result (Workshop)
 - Synergy > 15%
 - Memory > 5x savings
 - Win 2+ domains
+- **EqProp + HoloLink validated** (novel combination)
 
 ### Minimum Viable (Position Paper)
 - Architecture validated
 - Limitations documented
 - Reproducible
+
+### Novel Contribution Summary
+
+| Contribution | Novelty | Evidence | Publication Path |
+|--------------|---------|----------|------------------|
+| EqProp + Associative Memory | ⭐⭐⭐ High | `eqprop_ana.py` | NeurIPS bio-ML track |
+| Stack + Algorithmic Read | ⭐⭐⭐ High | v3 100% generalization | ICLR main |
+| Multi-track SSM with HoloLink | ⭐⭐ Medium | +19.5% synergy | Workshop |
+| EqProp for SSM | ⭐⭐ Medium | Local learning for temporal | Workshop |
 
 ---
 
@@ -564,61 +783,92 @@ Time Limits:
 ```
 ana/
 ├── config.py
-├── models.py
-├── experiments.py
-├── tasks.py            # ❌ NO COPY/REVERSE OBSESSION
+├── models.py           # Standard ANA with HoloLink
+├── experiments.py      # Synergy, ablation experiments
+├── tasks.py            # Associative recall tasks (NOT copy/reverse)
 ├── benchmark.py
-├── profiling/          # NEW
+│
+├── eqprop_ana.py       # EqProp integration (NEW - HIGH VALUE)
+├── eqprop_seq.py       # Sequence EqProp implementation
+├── bioplausible_ana.py # Bioplausible library integration
+│
+├── reverse_net.py      # Specialized reversal model (DONE)
+│
+├── profiling/          # Performance optimization
 │   ├── profile_baseline.py
 │   └── verify_optimizations.py
-├── icl/                # NEW - THE REAL FOCUS
-│   ├── tasks.py        # Associative recall, pattern completion
+│
+├── icl/                # In-context learning experiments
+│   ├── tasks.py
 │   └── evaluate.py
-└── rl/                 # NEW (Phase 3 only)
+│
+└── rl/                 # Phase 3 only
 
-# ❌ FORBIDDEN FILES:
-# - reverse_net.py (don't create)
-# - analyze_reversal.ipynb (done, move on)
-# - Any file with "reverse" in name
+# ANALYSIS FILES (complete, reference only):
+# - ANALYSIS.md: Reverse task failure analysis
+# - analyze_reversal.ipynb: Visualizations
 ```
 
 ---
 
-## Immediate Actions
+## Immediate Actions (PRIORITY ORDER)
 
-### Hour 1-2: Optimize
+### Hour 1-2: EqProp Validation (HIGHEST PRIORITY)
 ```bash
-python -m ana.profiling.profile_baseline
-# Apply AMP, torch.compile, parallel_scan
-# Verify >1.5x speedup
-# MOVE ON even if only 1.5x
+# Test if EqProp solves the controller interference problem
+python -c "
+import sys
+sys.path.insert(0, '/home/me/ana')
+from ana.eqprop_seq import train_with_eqprop
+train_with_eqprop()
+"
+
+# SUCCESS = EqProp achieves ~94% (matching HoloLink-only)
+# FAILURE = EqProp matches backprop's 8-9% (document and move on)
 ```
 
-### Hour 3-4: Validate
+### Hour 3-4: If EqProp Works - Full EqProp + HoloLink Experiment
 ```bash
-python -m ana.experiments  # E1
-# If synergy > 10%, continue
-# If not, document and pivot
+# Train EqProp ANA with controller enabled
+# Compare: EqProp + Controller vs Backprop + Controller vs HoloLink-only
+
+python -c "
+from ana.eqprop_ana import EqPropANA, EqPropConfig, train_with_eqprop
+# Run full curriculum with controller enabled
+"
 ```
 
-### Hour 5+: Execute
-- Follow plan
-- Respect time limits
-- Document and pivot when stuck
+### Hour 5-6: Baseline Experiments (parallel)
+```bash
+python -m ana.experiments  # Synergy validation
+python -m ana.profiling.profile_baseline  # Performance baseline
+```
+
+### Hour 7+: Decision Gate
+- If EqProp + HoloLink works: Write EqProp paper (breakthrough)
+- If EqProp fails: Document, proceed with HoloLink-only architecture
+- Follow time limits, pivot when stuck
 
 ---
 
 ## Final Reminder
 
-**What Matters**:
-- HoloLink associative memory (+19.5% synergy)
-- Multi-track temporal processing
-- O(1) memory efficiency
-- ICL capability
+**THE BIG QUESTION**: Can EqProp's local learning solve the controller interference problem?
+
+**What We Know**:
+- HoloLink alone: 94.4% ✅
+- HoloLink + Controller (backprop): 8-9% ❌
+- EqProp + HoloLink: **UNKNOWN** ← This is the breakthrough opportunity
+
+**Priority Order**:
+1. **EqProp validation** - highest impact, most novel
+2. HoloLink-only architecture - proven to work
+3. ANA v3 for algorithmic tasks - different research direction
+4. Standard experiments - fallback
 
 **What Doesn't Matter**:
 - Copy task (100%, done)
-- Reverse task (impossible, accepted)
-- Algorithmic generalization (not our strength)
+- Reverse task with standard ANA (impossible, accepted)
+- Speed optimization (128x already achieved)
 
-**The Goal**: Demonstrate that ANA excels at what it was designed for (associative recall, ICL, efficiency), not to force it to do things it can't (bidirectional reasoning, algorithm learning).
+**The Goal**: Demonstrate that local learning (EqProp) enables modular architectures where backprop fails. This is a fundamental insight about gradient interference and bio-plausible alternatives.
