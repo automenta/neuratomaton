@@ -8,7 +8,8 @@ import os
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Callable
+from tqdm import tqdm
 
 from ..models.config import ANAConfig
 from ..models.core import ANAModel, BaselineSSM
@@ -34,14 +35,18 @@ class ComparisonRunner:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.logger.info(f"Running on device: {self.device}")
 
-    def train_model(self, model: nn.Module, train_loader: DataLoader, max_steps: int = 1000, lr: float = 1e-3) -> List[float]:
+    def train_model(self, model: nn.Module, train_loader: DataLoader, max_steps: int = 1000, lr: float = 1e-3,
+                    callback: Optional[Callable[[int, float, nn.Module], None]] = None) -> List[float]:
         model.to(self.device)
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         losses = []
 
         iterator = iter(train_loader)
-        for step in range(max_steps):
+
+        pbar = tqdm(range(max_steps), desc="Training")
+
+        for step in pbar:
             try:
                 batch = next(iterator)
             except StopIteration:
@@ -62,12 +67,17 @@ class ComparisonRunner:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-                losses.append(loss.item())
+                current_loss = loss.item()
+                losses.append(current_loss)
+                pbar.set_postfix({'loss': f"{current_loss:.4f}"})
             else:
                 losses.append(0.0)
 
             if step % 100 == 0:
                 self.logger.info(f"Step {step}/{max_steps}: Loss {np.mean(losses[-100:] if len(losses) > 0 else [0]):.4f}")
+
+            if callback:
+                callback(step, losses[-1] if losses else 0.0, model)
 
         return losses
 
