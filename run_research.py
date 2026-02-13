@@ -1,6 +1,8 @@
 import argparse
 import sys
 import os
+from ana.config import ANAConfig
+from ana.research.core import ExperimentRegistry, load_config_overrides
 
 # Ensure ana package is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -11,50 +13,57 @@ def main():
     parser.add_argument("--experiment", type=str, help="Experiment name")
     parser.add_argument("--device", type=str, default="cpu", help="Device to run on (cpu, cuda)")
     parser.add_argument("--interactive", action="store_true", help="Enable interactive mode (Phase 2)")
+    parser.add_argument("--config", type=str, default="", help="Config overrides (e.g. 'd_model=128,dropout=0.1')")
 
     args = parser.parse_args()
 
+    # Pre-load phase 1 modules to ensure registration
     if args.phase == 1:
-        from ana.research.phase1_validation.benchmarks import BenchmarkRunner
-        from ana.research.phase1_validation.scaling import ScalingExperiment
-        from ana.config import ANAConfig
-        from ana.models import ANAModel
+        try:
+            import ana.research.phase1_validation.benchmarks
+            import ana.research.phase1_validation.scaling
+        except ImportError as e:
+            print(f"Warning: Could not import Phase 1 experiments: {e}")
 
-        if args.experiment == "benchmarks":
-            print("Running Benchmarks...")
-            config = ANAConfig()
-            model = ANAModel(config)
-            runner = BenchmarkRunner(model, device=args.device)
-            runner.run_all()
+    # Check Registry first
+    experiment_cls = ExperimentRegistry.get(args.phase, args.experiment)
 
-        elif args.experiment == "scaling":
-            print("Running Scaling Experiment...")
-            configs = {
-                "Tiny": ANAConfig(d_model=32, num_layers=1),
-                "Small": ANAConfig(d_model=64, num_layers=2),
-                "Medium": ANAConfig(d_model=128, num_layers=4)
-            }
-            exp = ScalingExperiment(device=args.device)
-            exp.run_experiment(configs)
+    if experiment_cls:
+        print(f"Running Experiment via Registry: {args.experiment} (Phase {args.phase})")
 
-        else:
-            print("Available Phase 1 experiments: benchmarks, scaling")
+        # Default config
+        config = ANAConfig()
+        if args.device == "cuda":
+            config.device = "cuda"
+
+        # Apply overrides
+        config = load_config_overrides(config, args.config)
+
+        experiment = experiment_cls(config, device=args.device)
+        experiment.run()
+        return
+
+    # Fallback for non-migrated experiments
+    if args.phase == 1:
+        # Phase 1 is fully migrated, so if we are here, it's an unknown experiment
+        print("Available Phase 1 experiments: benchmarks, scaling")
 
     elif args.phase == 2:
         from ana.research.phase2_text.long_context import needle_in_haystack
         from ana.research.phase2_text.inference import InferenceEngine
-        from ana.config import ANAConfig
         from ana.models import ANAModel
 
         if args.experiment == "long_context":
             print("Running Long Context Experiment...")
             config = ANAConfig(max_position=4096, vocab_size=100)
+            config = load_config_overrides(config, args.config)
             model = ANAModel(config).to(args.device)
             needle_in_haystack(model, context_length=128)
 
         elif args.experiment == "inference":
             print("Running Inference Demo...")
             config = ANAConfig(vocab_size=100)
+            config = load_config_overrides(config, args.config)
             model = ANAModel(config).to(args.device)
             engine = InferenceEngine(model, device=args.device)
             if args.interactive:
@@ -68,12 +77,12 @@ def main():
     elif args.phase == 3:
         from ana.research.phase3_vision.models import ANAVisionModel, ANAVisionCaptioner
         from ana.research.phase3_vision.train import VisionTrainer
-        from ana.config import ANAConfig
         import torch
 
         if args.experiment == "train_vision":
             print("Running Vision Training...")
             config = ANAConfig(d_model=64, patch_size=16)
+            config = load_config_overrides(config, args.config)
             model = ANAVisionModel(config, num_classes=10)
             trainer = VisionTrainer(model, device=args.device)
 
@@ -90,6 +99,7 @@ def main():
         elif args.experiment == "captioning":
             print("Running Captioning Model Demo...")
             config = ANAConfig(d_model=64, patch_size=16, vocab_size=100)
+            config = load_config_overrides(config, args.config)
             model = ANAVisionCaptioner(config).to(args.device)
             images = torch.randn(1, 3, 224, 224).to(args.device)
             text_ids = torch.randint(0, 100, (1, 10)).to(args.device)
@@ -102,12 +112,12 @@ def main():
     elif args.phase == 4:
         from ana.research.phase4_rl.agent import ANARLAgent
         from ana.research.phase4_rl.train import RLTrainer
-        from ana.config import ANAConfig
         import torch
 
         if args.experiment == "train_rl":
             print("Running RL Training...")
             config = ANAConfig(observation_space=10, action_space=4, d_model=32)
+            config = load_config_overrides(config, args.config)
             agent = ANARLAgent(config)
             trainer = RLTrainer(agent, device=args.device)
 
@@ -125,12 +135,12 @@ def main():
     elif args.phase == 5:
         from ana.research.phase5_specialized.models import ANASeriesModel
         from ana.research.phase5_specialized.train import SeriesTrainer
-        from ana.config import ANAConfig
         import torch
 
         if args.experiment == "train_series":
             print("Running Series Training...")
             config = ANAConfig(series_dim=1, d_model=32)
+            config = load_config_overrides(config, args.config)
             model = ANASeriesModel(config)
             trainer = SeriesTrainer(model, device=args.device)
 
@@ -146,12 +156,12 @@ def main():
         # Using Phase 6 for "Production & Ecosystem" (Deployment)
         from ana.research.deployment.export import export_to_onnx
         from ana.models import ANAModel
-        from ana.config import ANAConfig
         import torch
 
         if args.experiment == "export_onnx":
             print("Running ONNX Export...")
             config = ANAConfig(vocab_size=100, d_model=32, num_layers=1)
+            config = load_config_overrides(config, args.config)
             model = ANAModel(config)
             dummy = torch.randint(0, 100, (1, 32))
             export_to_onnx(model, dummy, filepath="ana_research_model.onnx")
