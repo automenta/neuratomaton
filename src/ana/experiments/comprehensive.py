@@ -258,29 +258,56 @@ class ComparisonRunner:
         """Generates a Markdown report from results."""
         report_path = os.path.join(self.output_dir, "REPORT.md")
         with open(report_path, 'w') as f:
-            f.write(f"# ANA Comprehensive Analysis Report\n")
-            f.write(f"Date: {self.timestamp}\n\n")
+            f.write(f"# ANA Comprehensive Analysis Report\n\n")
+            f.write(f"**Date:** {self.timestamp}\n")
+            f.write(f"**Device:** {self.device}\n\n")
+
+            f.write("## Executive Summary\n")
+            f.write("This report summarizes the performance of the Adaptive Neural Automaton (ANA) architecture across key benchmarks.\n\n")
 
             # Scaling
             scaling_path = os.path.join(self.output_dir, "scaling_results.json")
             if os.path.exists(scaling_path):
                 with open(scaling_path, 'r') as j:
                     res = json.load(j)
-                f.write("## Scaling Benchmark (Copy Task)\n")
-                f.write("| Seq Len | ANA Acc | Baseline Acc |\n|---|---|---|\n")
+                f.write("### 1. Scaling Benchmark (Copy Task)\n")
+                f.write("Tests memory capacity by increasing sequence length (N).\n\n")
+                f.write("| Sequence Length | ANA Accuracy | Baseline Accuracy | Delta |\n")
+                f.write("| :--- | :---: | :---: | :---: |\n")
+
+                ana_wins = 0
                 for sl, ana, base in zip(res['seq_lens'], res['ana'], res['baseline']):
-                    f.write(f"| {sl} | {ana:.4f} | {base:.4f} |\n")
-                f.write("\n")
+                    delta = (ana - base) * 100
+                    delta_str = f"+{delta:.1f}%" if delta > 0 else f"{delta:.1f}%"
+                    bold_ana = "**" if ana >= base else ""
+                    f.write(f"| {sl} | {bold_ana}{ana:.4f}{bold_ana} | {base:.4f} | {delta_str} |\n")
+                    if ana >= base: ana_wins += 1
+
+                f.write(f"\n**Insight:** ANA outperformed Baseline on **{ana_wins}/{len(res['seq_lens'])}** tasks.\n\n")
+
+                # Check for visualization images
+                plot_dir = os.path.join(self.output_dir, "plots", "scaling")
+                if os.path.exists(plot_dir):
+                    f.write("#### Visual Analysis (Max Length)\n")
+                    # List first few plots
+                    pngs = sorted([p for p in os.listdir(plot_dir) if p.endswith(".png")])
+                    for png in pngs[:2]: # Show mixing and gating
+                        rel_path = os.path.join("plots", "scaling", png)
+                        f.write(f"![{png}]({rel_path})\n\n")
 
             # Ablation
             ablation_path = os.path.join(self.output_dir, "ablation_results.json")
             if os.path.exists(ablation_path):
                 with open(ablation_path, 'r') as j:
                     res = json.load(j)
-                f.write("## Ablation Study (Associative Recall)\n")
-                f.write("| Config | Accuracy | Loss |\n|---|---|---|\n")
-                for name, metrics in res.items():
-                    f.write(f"| {name} | {metrics['accuracy']:.4f} | {metrics['loss']:.4f} |\n")
+                f.write("### 2. Ablation Study (Associative Recall)\n")
+                f.write("Analyzes the contribution of individual components.\n\n")
+                f.write("| Configuration | Accuracy | Loss |\n")
+                f.write("| :--- | :---: | :---: |\n")
+
+                sorted_res = sorted(res.items(), key=lambda x: x[1]['accuracy'], reverse=True)
+                for name, metrics in sorted_res:
+                    f.write(f"| **{name}** | {metrics['accuracy']:.4f} | {metrics['loss']:.4f} |\n")
                 f.write("\n")
 
             # Throughput
@@ -288,8 +315,10 @@ class ComparisonRunner:
             if os.path.exists(tp_path):
                 with open(tp_path, 'r') as j:
                     res = json.load(j)
-                f.write("## Throughput Benchmark\n")
-                f.write("| Seq Len | Tokens/Sec | Peak Mem (MB) |\n|---|---|---|\n")
+                f.write("### 3. Throughput Benchmark\n")
+                f.write("Measures inference efficiency.\n\n")
+                f.write("| Sequence Length | Tokens/Sec | Peak Memory (MB) |\n")
+                f.write("| :--- | :---: | :---: |\n")
                 for sl, metrics in res.items():
                     f.write(f"| {sl} | {metrics['tok_per_sec']:.2f} | {metrics['peak_mem_mb']:.2f} |\n")
 

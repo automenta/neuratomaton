@@ -59,8 +59,7 @@ def run_live_demo(steps: int = 500, output_dir: str = "results/demo"):
     # Validation helper
     def validate(step):
         loss, acc = runner.evaluate_model(model, val_loader)
-        print(f"\n[Step {step}] Validation Accuracy: {acc*100:.1f}% | Loss: {loss:.4f}")
-        return acc
+        return acc, loss
 
     # Plotting helper
     def generate_plots(step):
@@ -86,20 +85,39 @@ def run_live_demo(steps: int = 500, output_dir: str = "results/demo"):
 
     def training_callback(step, current_loss, model_ref):
         # 1. Validation every 20 steps
+        acc = 0.0
         if step > 0 and step % 20 == 0:
-            acc = validate(step)
+            acc, val_loss = validate(step)
             history['step'].append(step)
             history['acc'].append(acc)
 
+            # Clear screen and print dashboard
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print("="*60)
+            print("ANA FAST BREAKTHROUGH DEMO - LIVE DASHBOARD")
+            print("="*60)
+            print(f"Step: {step}/{steps}")
+            print(f"Current Loss: {current_loss:.4f}")
+            print(f"Validation Acc: {acc*100:.1f}%")
+
+            # Visual Progress Bar
+            bar_len = 30
+            filled = int(bar_len * acc)
+            bar = "█" * filled + "-" * (bar_len - filled)
+            print(f"Progress: [{bar}]")
+
             # Insight triggers
-            if acc > 0.95 and (len(history['acc']) < 2 or history['acc'][-2] < 0.95):
-                print(f"\n>>> BREAKTHROUGH: Model has mastered the task! <<<")
-            elif acc > 0.5 and (len(history['acc']) < 2 or history['acc'][-2] < 0.5):
-                print(f"\n>>> PROGRESS: Model is learning to associate keys and values. <<<")
+            if acc > 0.95:
+                print(f"\n\033[1;32m>>> BREAKTHROUGH: Model has mastered the task! <<<\033[0m")
+            elif acc > 0.5:
+                print(f"\n\033[1;33m>>> PROGRESS: Model is learning associations. <<<\033[0m")
+            elif acc < 0.1:
+                print(f"\n>>> STATUS: Model is still exploring randomly. <<<")
 
         # 2. Plotting every 50 steps (or on breakthrough)
         if step > 0 and step % 50 == 0:
             generate_plots(step)
+            print(f"\nPlots updated in: {latest_dir}")
 
     # Run Training
     print("\nStarting Training... (Open 'results/demo/latest' to watch plots update)")

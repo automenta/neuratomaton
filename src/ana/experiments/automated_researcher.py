@@ -28,16 +28,20 @@ class AutomatedResearcher:
 
     def run_pipeline(self, quick: bool = False, tune: bool = False, trials: int = 20):
         self.logger.info("Starting Automated Research Pipeline...")
+        print("\n\033[1;34m=== ANA RESEARCH PIPELINE STARTED ===\033[0m")
         self.status = "running"
 
         # Hyperparameter Tuning (Optional/Adaptive)
         if tune:
+             print("\n\033[1;33m[OPT] Adaptive Tuning Requested...\033[0m")
              self.logger.info("Adaptive Tuning: Requested by User.")
              self._stage_tuning("sanity", trials, quick)
 
         # Stage 1: Sanity Check (Associative Recall)
+        print("\n\033[1;36m[STAGE 1] Sanity Check (Associative Recall)\033[0m")
         if not self._stage_sanity_check(quick):
             self.logger.warning("Stage 1 Failed: Model failed basic sanity check.")
+            print("\033[1;31m[FAIL] Sanity Check Failed.\033[0m Triggering Adaptive Tuning...")
             self.logger.info("Attempting Adaptive Tuning to fix Stage 1...")
 
             # Adaptive Tuning
@@ -45,38 +49,42 @@ class AutomatedResearcher:
 
             if best_config:
                  self.logger.info("Retrying Stage 1 with Tuned Config...")
-                 # TODO: Pass config to sanity check (currently uses default)
-                 # We need to refactor _stage_sanity_check to accept config.
-                 # For now, let's just assume we found a better config but the pipeline
-                 # flow requires update.
-                 # Let's pass 'config' to sanity check.
+                 print("\n\033[1;32m[RETRY] Retrying Stage 1 with Optimized Config...\033[0m")
                  if not self._stage_sanity_check(quick, config=best_config):
                       self.logger.error("Stage 1 Failed Again (Even after tuning). Aborting.")
+                      print("\033[1;31m[ABORT] Stage 1 Failed even after tuning. Model architecture likely flawed.\033[0m")
                       self.status = "failed_stage_1"
                       return
             else:
                  self.logger.error("Tuning Failed. Aborting.")
+                 print("\033[1;31m[ABORT] Tuning found no viable configuration.\033[0m")
                  self.status = "failed_stage_1"
                  return
+        else:
+            print("\033[1;32m[PASS] Sanity Check Passed.\033[0m")
 
         # Stage 2: Scaling Probe (Small N)
+        print("\n\033[1;36m[STAGE 2] Scaling Probe (Trend Analysis)\033[0m")
         if not self._stage_scaling_probe(quick):
             self.logger.warning("Stage 2 Warning: Scaling trend is negative or inconclusive.")
+            print("\033[1;33m[WARN] Scaling Trend is Negative/Inconclusive.\033[0m Triggering Tuning...")
             self.logger.info("Attempting Adaptive Tuning for Scaling...")
 
             best_config = self._stage_tuning("scaling", trials, quick)
             if best_config:
-                 # Retry Scaling with Tuned Config?
-                 # Or use it for Deep Dive?
-                 # Let's use it for deep dive.
-                 pass
+                 print("\033[1;32m[OPT] Optimized Scaling Config Found.\033[0m Proceeding to Deep Dive.")
+        else:
+            print("\033[1;32m[PASS] Scaling Probe Positive.\033[0m")
 
         # Stage 3: Deep Dive (Ablation & Large N)
+        print("\n\033[1;36m[STAGE 3] Deep Dive (Full Benchmarks)\033[0m")
         self._stage_deep_dive(quick)
 
         self.status = "completed"
         self.logger.info("Research Pipeline Completed Successfully.")
+        print("\n\033[1;32m=== RESEARCH PIPELINE COMPLETED ===\033[0m")
         self.runner.generate_report()
+        print(f"Report generated at: {os.path.join(self.runner.output_dir, 'REPORT.md')}")
 
     def _stage_tuning(self, task: str, trials: int, quick: bool) -> Optional[ANAConfig]:
         """
