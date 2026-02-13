@@ -11,7 +11,7 @@ from datetime import datetime
 
 from ..models.config import ANAConfig
 from ..models.core import ANAModel
-from ..utils.datasets import InductionHeadTask, MultiQueryAssociativeRecall, CopyTask
+from ..utils.datasets import InductionHeadTask, MultiQueryAssociativeRecall, CopyTask, PointerChainTask
 from .comprehensive import ComparisonRunner
 
 class PotentialRevealer(ComparisonRunner):
@@ -21,6 +21,7 @@ class PotentialRevealer(ComparisonRunner):
     1. Induction Capability (In-Context Learning)
     2. Length Generalization (Algorithmic Stability)
     3. Cognitive State Dynamics (Thinking vs Remembering)
+    4. Reasoning Depth (Adaptive Computation)
     """
     def __init__(self, output_dir: str = "results/potential"):
         super().__init__(output_dir=output_dir)
@@ -153,6 +154,89 @@ class PotentialRevealer(ComparisonRunner):
 
         return results
 
+    def run_reasoning_experiment(self, quick: bool = False):
+        self.logger.info("=== EXPERIMENT: Reasoning (Thinking Steps) ===")
+
+        steps = 200 if quick else 1000
+        chain_len = 5 # Hard task
+
+        task = PointerChainTask(num_samples=2000, vocab_size=40, chain_len=chain_len, noise_pairs=2)
+        train_loader = DataLoader(task, batch_size=16, shuffle=True)
+        val_loader = DataLoader(task, batch_size=16, shuffle=False)
+
+        configs = {
+            'No Thinking': ANAConfig(max_thinking_steps=0, d_model=64, num_layers=2),
+            'Thinking (K=4)': ANAConfig(max_thinking_steps=4, d_model=64, num_layers=2)
+        }
+
+        results = {}
+
+        for name, config in configs.items():
+            self.logger.info(f"Training Config: {name}")
+            model = ANAModel(config)
+
+            # Use smaller LR for thinking steps?
+            self.train_model(model, train_loader, max_steps=steps)
+            loss, acc = self.evaluate_model(model, val_loader)
+
+            self.logger.info(f"{name} Accuracy: {acc*100:.2f}%")
+            results[name] = acc
+
+            tag = "thinking" if config.max_thinking_steps > 0 else "nothinking"
+            self.save_visualization(model, task, "reasoning", tag)
+
+        with open(os.path.join(self.output_dir, "reasoning_results.json"), 'w') as f:
+            json.dump(results, f, indent=2)
+
+        return results
+
+    def run_noise_robustness_experiment(self, quick: bool = False):
+        self.logger.info("=== EXPERIMENT: Noise Robustness ===")
+
+        steps = 200 if quick else 1000
+
+        # Train on Clean, Test on Noisy
+        clean_task = CopyTask(num_samples=2000, seq_len=32, vocab_size=40)
+        # Noisy task: Insert random tokens?
+        # Standard CopyTask doesn't support noise injection easily via params unless we subclass.
+        # But AssociativeRecall supports noise_len.
+
+        # Let's use AssociativeRecall with varying noise.
+        # Train on noise=8, Test on noise=32.
+
+        train_task = MultiQueryAssociativeRecall(num_samples=2000, vocab_size=40, num_pairs=4, num_queries=2)
+        # We need a Noisy version of MultiQuery.
+        # Actually, let's just use PointerChainTask with varying noise_pairs.
+
+        train_task = PointerChainTask(num_samples=2000, vocab_size=40, chain_len=3, noise_pairs=0)
+        test_task = PointerChainTask(num_samples=500, vocab_size=40, chain_len=3, noise_pairs=4)
+
+        train_loader = DataLoader(train_task, batch_size=16, shuffle=True)
+        test_loader = DataLoader(test_task, batch_size=16, shuffle=False)
+
+        config = ANAConfig(
+            d_model=64, state_dim=64, num_layers=2, track_count=2,
+            use_hololink=True, use_controller=True
+        )
+
+        model = ANAModel(config)
+        self.logger.info("Training on Clean Data (Noise=0)...")
+        self.train_model(model, train_loader, max_steps=steps)
+
+        _, clean_acc = self.evaluate_model(model, DataLoader(train_task, batch_size=16, shuffle=False))
+        _, noisy_acc = self.evaluate_model(model, test_loader)
+
+        self.logger.info(f"Clean Accuracy: {clean_acc*100:.2f}%")
+        self.logger.info(f"Noisy Accuracy (Noise=4 pairs): {noisy_acc*100:.2f}%")
+
+        self.save_visualization(model, test_task, "noise", "high_noise")
+
+        results = {"clean": clean_acc, "noisy": noisy_acc}
+        with open(os.path.join(self.output_dir, "noise_results.json"), 'w') as f:
+            json.dump(results, f, indent=2)
+
+        return results
+
     def generate_potential_report(self):
         report_path = os.path.join(self.output_dir, "POTENTIAL_REPORT.md")
         with open(report_path, 'w') as f:
@@ -193,7 +277,27 @@ class PotentialRevealer(ComparisonRunner):
                 f.write("Testing dense retrieval capacity.\n\n")
                 f.write(f"- **Accuracy:** {res['accuracy']*100:.2f}%\n\n")
 
-            f.write("## 4. Visual Analysis\n")
+            # Reasoning
+            reas_path = os.path.join(self.output_dir, "reasoning_results.json")
+            if os.path.exists(reas_path):
+                with open(reas_path) as j: res = json.load(j)
+                f.write("## 4. Reasoning & Thinking Steps\n")
+                f.write("Comparing standard processing vs Adaptive Computation Time (Thinking Steps).\n\n")
+                f.write("| Configuration | Accuracy |\n| :--- | :---: |\n")
+                for name, acc in res.items():
+                    f.write(f"| {name} | {acc:.4f} |\n")
+                f.write("\n")
+
+            # Noise
+            noise_path = os.path.join(self.output_dir, "noise_results.json")
+            if os.path.exists(noise_path):
+                with open(noise_path) as j: res = json.load(j)
+                f.write("## 5. Noise Robustness\n")
+                f.write("Training on clean data, testing on noisy data.\n\n")
+                f.write(f"- **Clean Accuracy:** {res['clean']*100:.2f}%\n")
+                f.write(f"- **Noisy Accuracy:** {res['noisy']*100:.2f}%\n\n")
+
+            f.write("## 6. Visual Analysis\n")
             f.write("Check the `plots/` directory for 'Cognitive State' visualizations showing how ANA dynamically allocates attention between HoloLink (Memory) and Recurrent Tracks (Reasoning).\n")
 
         self.logger.info(f"Report generated at {report_path}")
@@ -214,6 +318,12 @@ def main():
 
     print("=== Running Multi-Query Experiment ===")
     revealer.run_multi_query_experiment(quick=args.quick)
+
+    print("=== Running Reasoning Experiment ===")
+    revealer.run_reasoning_experiment(quick=args.quick)
+
+    print("=== Running Noise Robustness Experiment ===")
+    revealer.run_noise_robustness_experiment(quick=args.quick)
 
     revealer.generate_potential_report()
     print(f"Done. Results in {revealer.output_dir}")
