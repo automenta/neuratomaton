@@ -1,6 +1,8 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 .Python
 build/
 develop-eggs/
@@ -18,33 +20,27 @@ wheels/
 .installed.cfg
 *.egg
 
-.pytest_cache/
-.pytest_cache/*
-
-.ipynb_checkpoints/
-
-*.pt
-*.pth
-*.ckpt
-
-archive/logs/
-archive/results/*.json
-archive/results/*.pt
-archive/analysis/
-
-data/corpus.txt
-
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-.env
-.venv
-env/
+# Virtual environments
 venv/
+env/
 ENV/
 
-.tensorboard/
-runs/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data
+data/
+results/
+checkpoints/
+samples/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
