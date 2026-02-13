@@ -70,6 +70,12 @@ def smoketest():
     elif not check_artifact("results/phase1_scaling", "scaling_plot.png"):
         all_passed = False
 
+    # Phase 1: Baseline Comparison
+    if not run_command("python3 run_research.py --phase 1 --experiment baseline_comparison"):
+        all_passed = False
+    elif not check_artifact("results/phase1_baseline_comparison", "comparison_report.md"):
+        all_passed = False
+
     # Phase 2: Long Context
     if not run_command("python3 run_research.py --phase 2 --experiment long_context"):
         all_passed = False

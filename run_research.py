@@ -22,6 +22,7 @@ def main():
         if args.phase == 1:
             import ana.research.phase1_validation.benchmarks
             import ana.research.phase1_validation.scaling
+            import ana.research.phase1_validation.baseline_comparison
         elif args.phase == 2:
             import ana.research.phase2_text.long_context
             import ana.research.phase2_text.inference
