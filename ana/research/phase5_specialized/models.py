@@ -38,12 +38,56 @@ class ANASeriesModel(nn.Module):
         # x: (B, Seq, In)
         h = self.input_proj(x)
 
-        for layer in self.layers:
-            track_outs = []
-            for track in layer['tracks']:
-                yt, _ = track.forward_sequence(h)
-                track_outs.append(yt)
-            h = h + torch.stack(track_outs).mean(dim=0)
+        for i, layer in enumerate(self.layers):
+            # Controller
+            track_outputs = None
+            g_ret = None
+            if self.config.use_controller:
+                ctl = layer['controller']
+                track_outputs, g_ret, _ = ctl.forward_sequence(h)
+
+            # Tracks
+            track_states = []
+            track_results = []
+            track_mix_logits = []
+
+            for t_idx, track in enumerate(layer['tracks']):
+                gates = None
+                mix = None
+                if track_outputs is not None:
+                    g_alpha, g_beta, g_mix = track_outputs[t_idx]
+                    gates = (g_alpha, g_beta)
+                    mix = g_mix
+
+                yt, ht = track.forward_sequence(h, dynamic_gates=gates)
+                track_states.append(ht)
+                track_results.append(yt)
+                if mix is not None:
+                    track_mix_logits.append(mix)
+                else:
+                    track_mix_logits.append(torch.zeros_like(yt[..., :1]))
+
+            # Mixing
+            stacked_results = torch.stack(track_results, dim=2)
+            stacked_mix = torch.stack(track_mix_logits, dim=2)
+            mix_weights = torch.softmax(stacked_mix, dim=2)
+            layer_out = (stacked_results * mix_weights).sum(dim=2)
+
+            # HoloLink
+            qt = 0
+            if self.config.use_hololink:
+                holo = layer['holo']
+                ht_combined = torch.cat(track_states, dim=-1)
+                qt, _ = holo.forward_sequence(h, ht_combined)
+
+            # Merge
+            if self.config.use_controller and self.config.use_hololink:
+                ret_gate = torch.sigmoid(g_ret)
+                layer_out = layer_out + ret_gate * qt
+            elif self.config.use_hololink:
+                layer_out = layer_out + qt
+
+            h = h + layer_out
 
         h = self.norm(h)
         pred = self.head(h)

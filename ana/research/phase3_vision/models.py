@@ -15,7 +15,6 @@ class ANAVisionModel(nn.Module):
         self.d_model = config.d_model
 
         # Patch Embedding: (B, C, H, W) -> (B, Seq, D)
-        # Assuming 3 channels
         patch_dim = 3 * self.patch_size * self.patch_size
         self.patch_embed = nn.Linear(patch_dim, self.d_model)
 
@@ -35,10 +34,9 @@ class ANAVisionModel(nn.Module):
             self.layers.append(layer_dict)
 
         self.norm = nn.LayerNorm(config.d_model)
-        self.head = nn.Linear(config.d_model, num_classes) # Classification head
+        self.head = nn.Linear(config.d_model, num_classes)
 
     def forward(self, images):
-        # images: (B, 3, H, W)
         b, c, h, w = images.shape
         p = self.patch_size
 
@@ -49,17 +47,61 @@ class ANAVisionModel(nn.Module):
 
         x = self.patch_embed(patches)
 
-        for layer in self.layers:
-            track_outs = []
-            for track in layer['tracks']:
-                yt, _ = track.forward_sequence(x)
-                track_outs.append(yt)
-            x = x + torch.stack(track_outs).mean(dim=0)
+        # Run layers
+        for i, layer in enumerate(self.layers):
+            # 1. Controller
+            track_outputs = None
+            g_ret = None
+            if self.config.use_controller:
+                ctl = layer['controller']
+                track_outputs, g_ret, _ = ctl.forward_sequence(x)
+
+            # 2. Tracks
+            track_states = []
+            track_results = []
+            track_mix_logits = []
+
+            for t_idx, track in enumerate(layer['tracks']):
+                gates = None
+                mix = None
+                if track_outputs is not None:
+                    g_alpha, g_beta, g_mix = track_outputs[t_idx]
+                    gates = (g_alpha, g_beta)
+                    mix = g_mix
+
+                yt, ht = track.forward_sequence(x, dynamic_gates=gates)
+                track_states.append(ht)
+                track_results.append(yt)
+                if mix is not None:
+                    track_mix_logits.append(mix)
+                else:
+                    track_mix_logits.append(torch.zeros_like(yt[..., :1]))
+
+            # Mixing
+            stacked_results = torch.stack(track_results, dim=2)
+            stacked_mix = torch.stack(track_mix_logits, dim=2)
+            mix_weights = torch.softmax(stacked_mix, dim=2)
+            layer_out = (stacked_results * mix_weights).sum(dim=2)
+
+            # 3. HoloLink
+            qt = 0
+            if self.config.use_hololink:
+                holo = layer['holo']
+                ht_combined = torch.cat(track_states, dim=-1)
+                qt, _ = holo.forward_sequence(x, ht_combined)
+
+            # 4. Merge
+            if self.config.use_controller and self.config.use_hololink:
+                ret_gate = torch.sigmoid(g_ret)
+                layer_out = layer_out + ret_gate * qt
+            elif self.config.use_hololink:
+                layer_out = layer_out + qt
+
+            x = x + layer_out
 
         x = x.mean(dim=1)
         x = self.norm(x)
         logits = self.head(x)
-
         return logits
 
 class ANAVisionCaptioner(nn.Module):
@@ -80,7 +122,7 @@ class ANAVisionCaptioner(nn.Module):
         # Text Embedding
         self.text_embed = nn.Embedding(config.vocab_size, config.d_model)
 
-        # Core layers (shared)
+        # Core layers
         self.layers = nn.ModuleList()
         for _ in range(config.num_layers):
             layer_dict = nn.ModuleDict()
@@ -97,33 +139,74 @@ class ANAVisionCaptioner(nn.Module):
         self.head = nn.Linear(config.d_model, config.vocab_size)
 
     def forward(self, images, text_ids):
-        # 1. Process Images -> Patches
+        # 1. Process Images
         b, c, h, w = images.shape
         p = self.patch_size
         patches = images.unfold(2, p, p).unfold(3, p, p)
         patches = patches.contiguous().view(b, c, -1, p, p).permute(0, 2, 1, 3, 4).contiguous()
         patches = patches.view(b, -1, c * p * p)
-        img_embeds = self.patch_embed(patches) # (B, P_Seq, D)
+        img_embeds = self.patch_embed(patches)
 
-        # 2. Process Text -> Embeddings
-        txt_embeds = self.text_embed(text_ids) # (B, T_Seq, D)
+        # 2. Process Text
+        txt_embeds = self.text_embed(text_ids)
 
-        # 3. Concatenate (Image first, then Text)
+        # 3. Concatenate
         x = torch.cat([img_embeds, txt_embeds], dim=1)
 
-        # 4. Run ANA Core
-        for layer in self.layers:
-            track_outs = []
-            for track in layer['tracks']:
-                yt, _ = track.forward_sequence(x)
-                track_outs.append(yt)
-            x = x + torch.stack(track_outs).mean(dim=0)
+        # 4. Run ANA Core (Accurate Implementation)
+        for i, layer in enumerate(self.layers):
+            # Controller
+            track_outputs = None
+            g_ret = None
+            if self.config.use_controller:
+                ctl = layer['controller']
+                track_outputs, g_ret, _ = ctl.forward_sequence(x)
+
+            # Tracks
+            track_states = []
+            track_results = []
+            track_mix_logits = []
+
+            for t_idx, track in enumerate(layer['tracks']):
+                gates = None
+                mix = None
+                if track_outputs is not None:
+                    g_alpha, g_beta, g_mix = track_outputs[t_idx]
+                    gates = (g_alpha, g_beta)
+                    mix = g_mix
+
+                yt, ht = track.forward_sequence(x, dynamic_gates=gates)
+                track_states.append(ht)
+                track_results.append(yt)
+                if mix is not None:
+                    track_mix_logits.append(mix)
+                else:
+                    track_mix_logits.append(torch.zeros_like(yt[..., :1]))
+
+            # Mixing
+            stacked_results = torch.stack(track_results, dim=2)
+            stacked_mix = torch.stack(track_mix_logits, dim=2)
+            mix_weights = torch.softmax(stacked_mix, dim=2)
+            layer_out = (stacked_results * mix_weights).sum(dim=2)
+
+            # HoloLink
+            qt = 0
+            if self.config.use_hololink:
+                holo = layer['holo']
+                ht_combined = torch.cat(track_states, dim=-1)
+                qt, _ = holo.forward_sequence(x, ht_combined)
+
+            # Merge
+            if self.config.use_controller and self.config.use_hololink:
+                ret_gate = torch.sigmoid(g_ret)
+                layer_out = layer_out + ret_gate * qt
+            elif self.config.use_hololink:
+                layer_out = layer_out + qt
+
+            x = x + layer_out
 
         x = self.norm(x)
         logits = self.head(x)
 
-        # Return only text part logits (shifted for training usually, but here full sequence or just text part)
-        # Typically we predict text given image + prev_text
-        # So we return logits for the text portion
         t_len = txt_embeds.size(1)
         return logits[:, -t_len:, :]

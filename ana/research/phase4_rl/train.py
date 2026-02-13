@@ -23,8 +23,18 @@ class RLTrainer:
         obs = obs.to(self.device)
 
         # Forward
-        logits, value = self.agent(obs)
-        logits = logits.squeeze(1) # (B, ActDim)
+        output = self.agent(obs)
+        if len(output) == 3:
+            logits, value, _ = output
+        else:
+            logits, value = output
+
+        logits = logits.squeeze(1) # (B, ActDim) or (B, 1, ActDim) if squeezed already?
+        # If logits is (B, ActDim) from step, squeeze(1) might fail or squeeze nothing.
+        if logits.dim() == 2:
+             pass # Already (B, ActDim)
+        elif logits.dim() == 3:
+             logits = logits.squeeze(1)
 
         # Dummy loss
         # Maximize logits for taken action (imitation learning style for dummy)
