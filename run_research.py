@@ -10,6 +10,7 @@ def main():
     parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4, 5, 6], help="Research Phase (1-6)")
     parser.add_argument("--experiment", type=str, help="Experiment name")
     parser.add_argument("--device", type=str, default="cpu", help="Device to run on (cpu, cuda)")
+    parser.add_argument("--interactive", action="store_true", help="Enable interactive mode (Phase 2)")
 
     args = parser.parse_args()
 
@@ -30,7 +31,8 @@ def main():
             print("Running Scaling Experiment...")
             configs = {
                 "Tiny": ANAConfig(d_model=32, num_layers=1),
-                "Small": ANAConfig(d_model=64, num_layers=2)
+                "Small": ANAConfig(d_model=64, num_layers=2),
+                "Medium": ANAConfig(d_model=128, num_layers=4)
             }
             exp = ScalingExperiment(device=args.device)
             exp.run_experiment(configs)
@@ -55,7 +57,10 @@ def main():
             config = ANAConfig(vocab_size=100)
             model = ANAModel(config).to(args.device)
             engine = InferenceEngine(model, device=args.device)
-            engine.run_demo()
+            if args.interactive:
+                engine.run_interactive()
+            else:
+                engine.run_demo()
 
         else:
             print("Available Phase 2 experiments: long_context, inference")
@@ -77,6 +82,10 @@ def main():
             labels = torch.randint(0, 10, (4,))
             loss = trainer.train_epoch([(images, labels)])
             print(f"Loss: {loss:.4f}")
+
+            # Visualize
+            outputs = model(images.to(args.device))
+            trainer.save_predictions(images, labels, outputs)
 
         elif args.experiment == "captioning":
             print("Running Captioning Model Demo...")
@@ -102,9 +111,13 @@ def main():
             agent = ANARLAgent(config)
             trainer = RLTrainer(agent, device=args.device)
 
-            obs = torch.randn(1, 10)
-            loss = trainer.train_step(obs, 1, 1.0, obs, False)
-            print(f"Loss: {loss:.4f}")
+            # Simulate interactions
+            print("Simulating 50 steps...")
+            for i in range(50):
+                obs = torch.randn(1, 10)
+                loss = trainer.train_step(obs, 1, 1.0, obs, False)
+            print(f"Final Loss: {loss:.4f}")
+            trainer.plot_learning_curve()
 
         else:
             print("Available Phase 4 experiments: train_rl")
@@ -144,7 +157,6 @@ def main():
             export_to_onnx(model, dummy, filepath="ana_research_model.onnx")
             if os.path.exists("ana_research_model.onnx"):
                 os.remove("ana_research_model.onnx")
-                # Also check for potential .data files
                 if os.path.exists("ana_research_model.onnx.data"):
                     os.remove("ana_research_model.onnx.data")
                 print("Cleanup successful.")
