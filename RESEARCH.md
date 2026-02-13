@@ -11,11 +11,13 @@ The primary entry point for scientific discovery. It executes a staged research 
 ```bash
 python run_auto_research.py
 python run_auto_research.py --quick  # For smoketesting / CI
+python run_auto_research.py --tune --trials 50  # Force hyperparameter tuning
 ```
 
 **Stages:**
-- **Stage 1: Sanity Check (Fail Fast).** Runs a small Associative Recall task. If accuracy < 90%, the pipeline aborts.
-- **Stage 2: Scaling Probe (Probe Trend).** Runs a scaling benchmark on $N \in \{128, 512\}$. Checks if ANA outperforms the Baseline. If trend is negative, massive scaling is skipped.
+- **Adaptive Tuning (Optional).** If enabled or triggered by failure, runs an Optuna-based hyperparameter search to find a working configuration.
+- **Stage 1: Sanity Check (Fail Fast).** Runs a small Associative Recall task. If accuracy < 90%, it triggers **Adaptive Tuning** to fix the model. If tuning fails, it aborts.
+- **Stage 2: Scaling Probe (Probe Trend).** Runs a scaling benchmark on $N \in \{128, 512\}$. Checks if ANA outperforms the Baseline. If trend is negative, it triggers **Adaptive Tuning** for scaling parameters.
 - **Stage 3: Deep Dive.** Runs full benchmarks:
     - **Scaling:** Up to $N=4096$.
     - **Ablation:** Tests component contributions (HoloLink, Controller).

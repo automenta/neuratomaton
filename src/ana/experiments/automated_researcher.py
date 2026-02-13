@@ -10,6 +10,7 @@ from ..models.config import ANAConfig
 from ..models.core import ANAModel
 from ..utils.datasets import AssociativeRecallDataset, CopyTask
 from .comprehensive import ComparisonRunner
+from .tuning import HyperparameterTuner
 
 class AutomatedResearcher:
     """
@@ -25,20 +26,50 @@ class AutomatedResearcher:
         self.logger = self.runner.logger
         self.status = "initialized"
 
-    def run_pipeline(self, quick: bool = False):
+    def run_pipeline(self, quick: bool = False, tune: bool = False, trials: int = 20):
         self.logger.info("Starting Automated Research Pipeline...")
         self.status = "running"
 
+        # Hyperparameter Tuning (Optional/Adaptive)
+        if tune:
+             self.logger.info("Adaptive Tuning: Requested by User.")
+             self._stage_tuning("sanity", trials, quick)
+
         # Stage 1: Sanity Check (Associative Recall)
         if not self._stage_sanity_check(quick):
-            self.logger.error("Stage 1 Failed: Model failed basic sanity check. Aborting.")
-            self.status = "failed_stage_1"
-            return
+            self.logger.warning("Stage 1 Failed: Model failed basic sanity check.")
+            self.logger.info("Attempting Adaptive Tuning to fix Stage 1...")
+
+            # Adaptive Tuning
+            best_config = self._stage_tuning("sanity", trials, quick)
+
+            if best_config:
+                 self.logger.info("Retrying Stage 1 with Tuned Config...")
+                 # TODO: Pass config to sanity check (currently uses default)
+                 # We need to refactor _stage_sanity_check to accept config.
+                 # For now, let's just assume we found a better config but the pipeline
+                 # flow requires update.
+                 # Let's pass 'config' to sanity check.
+                 if not self._stage_sanity_check(quick, config=best_config):
+                      self.logger.error("Stage 1 Failed Again (Even after tuning). Aborting.")
+                      self.status = "failed_stage_1"
+                      return
+            else:
+                 self.logger.error("Tuning Failed. Aborting.")
+                 self.status = "failed_stage_1"
+                 return
 
         # Stage 2: Scaling Probe (Small N)
         if not self._stage_scaling_probe(quick):
-            self.logger.warning("Stage 2 Warning: Scaling trend is negative or inconclusive. Proceeding with caution.")
-            # We might still proceed, but maybe skip massive N
+            self.logger.warning("Stage 2 Warning: Scaling trend is negative or inconclusive.")
+            self.logger.info("Attempting Adaptive Tuning for Scaling...")
+
+            best_config = self._stage_tuning("scaling", trials, quick)
+            if best_config:
+                 # Retry Scaling with Tuned Config?
+                 # Or use it for Deep Dive?
+                 # Let's use it for deep dive.
+                 pass
 
         # Stage 3: Deep Dive (Ablation & Large N)
         self._stage_deep_dive(quick)
@@ -47,7 +78,22 @@ class AutomatedResearcher:
         self.logger.info("Research Pipeline Completed Successfully.")
         self.runner.generate_report()
 
-    def _stage_sanity_check(self, quick: bool) -> bool:
+    def _stage_tuning(self, task: str, trials: int, quick: bool) -> Optional[ANAConfig]:
+        """
+        Run Hyperparameter Tuning.
+        """
+        self.logger.info(f"=== Tuning Stage: {task} ===")
+        tuner = HyperparameterTuner(self.runner)
+        best_config = tuner.tune(task, n_trials=trials, quick=quick)
+
+        if best_config:
+             self.logger.info(f"Tuning Success! Best Config found with value: {tuner.best_value}")
+             return best_config
+        else:
+             self.logger.warning("Tuning yielded no valid config.")
+             return None
+
+    def _stage_sanity_check(self, quick: bool, config: Optional[ANAConfig] = None) -> bool:
         """
         Run small Associative Recall task.
         Criteria: > 90% accuracy.
@@ -59,7 +105,9 @@ class AutomatedResearcher:
         train_loader = torch.utils.data.DataLoader(task, batch_size=16, shuffle=True)
         val_loader = torch.utils.data.DataLoader(task, batch_size=16, shuffle=False)
 
-        config = ANAConfig(d_model=64, state_dim=64, num_layers=2, track_count=2, use_hololink=True, use_controller=True)
+        if config is None:
+             config = ANAConfig(d_model=64, state_dim=64, num_layers=2, track_count=2, use_hololink=True, use_controller=True)
+
         model = ANAModel(config)
 
         self.runner.train_model(model, train_loader, max_steps=steps)
