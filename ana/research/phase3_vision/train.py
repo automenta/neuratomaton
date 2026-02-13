@@ -1,19 +1,26 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from ana.research.phase3_vision.models import ANAVisionModel
-from ana.config import ANAConfig
 import matplotlib.pyplot as plt
 import os
+from ana.research.phase3_vision.models import ANAVisionModel
+from ana.config import ANAConfig
+from ana.research.core import ExperimentBase, ExperimentRegistry
 
-class VisionTrainer:
-    def __init__(self, model, device="cpu"):
-        self.model = model.to(device)
-        self.device = device
-        self.optimizer = optim.Adam(model.parameters(), lr=1e-3)
+@ExperimentRegistry.register(phase=3, name="train_vision")
+class VisionTrainerExperiment(ExperimentBase):
+    @property
+    def name(self) -> str:
+        return "train_vision"
+
+    @property
+    def phase(self) -> int:
+        return 3
+
+    def setup(self):
+        self.model = ANAVisionModel(self.config, num_classes=10).to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
         self.criterion = nn.CrossEntropyLoss()
-        self.results_dir = "results/phase3_vision"
-        os.makedirs(self.results_dir, exist_ok=True)
 
     def train_epoch(self, dataloader):
         self.model.train()
@@ -53,26 +60,24 @@ class VisionTrainer:
             ax.set_title(f"Pred: {preds[i].item()} | True: {labels[i].item()}")
             ax.axis('off')
 
-        save_path = os.path.join(self.results_dir, f"epoch_{epoch}_preds.png")
-        plt.savefig(save_path)
-        plt.close()
-        print(f"Predictions saved to {save_path}")
+        self.results.save_plot(f"epoch_{epoch}_preds.png")
+
+    def execute(self):
+        # Dummy data
+        images = torch.randn(4, 3, 224, 224)
+        labels = torch.randint(0, 10, (4,))
+        dataloader = [(images, labels)]
+
+        # Train
+        loss = self.train_epoch(dataloader)
+        self.results.log(f"Vision Training Loss: {loss:.4f}")
+        self.results.save_json("training_results.json", {"loss": loss})
+
+        # Visualize
+        outputs = self.model(images.to(self.device))
+        self.save_predictions(images, labels, outputs)
 
 if __name__ == "__main__":
-    # Dummy data
     config = ANAConfig(d_model=64, patch_size=16)
-    model = ANAVisionModel(config, num_classes=10)
-    trainer = VisionTrainer(model)
-
-    # Dummy dataloader
-    images = torch.randn(4, 3, 224, 224)
-    labels = torch.randint(0, 10, (4,))
-    dataloader = [(images, labels)]
-
-    # Train
-    loss = trainer.train_epoch(dataloader)
-    print(f"Vision Training Loss: {loss:.4f}")
-
-    # Visualize
-    outputs = model(images) # re-run for viz
-    trainer.save_predictions(images, labels, outputs)
+    exp = VisionTrainerExperiment(config)
+    exp.run()

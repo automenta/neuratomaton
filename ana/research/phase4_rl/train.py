@@ -1,24 +1,29 @@
 import torch
 import torch.optim as optim
-from ana.research.phase4_rl.agent import ANARLAgent
-from ana.config import ANAConfig
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-import os
+from ana.research.phase4_rl.agent import ANARLAgent
+from ana.config import ANAConfig
+from ana.research.core import ExperimentBase, ExperimentRegistry
 
-class RLTrainer:
-    def __init__(self, agent: ANARLAgent, device="cpu"):
-        self.agent = agent.to(device)
-        self.device = device
-        self.optimizer = optim.Adam(agent.parameters(), lr=1e-3)
+@ExperimentRegistry.register(phase=4, name="train_rl")
+class RLTrainerExperiment(ExperimentBase):
+    @property
+    def name(self) -> str:
+        return "train_rl"
+
+    @property
+    def phase(self) -> int:
+        return 4
+
+    def setup(self):
+        self.agent = ANARLAgent(self.config).to(self.device)
+        self.optimizer = optim.Adam(self.agent.parameters(), lr=1e-3)
         self.rewards_log = []
-        self.results_dir = "results/phase4_rl"
-        os.makedirs(self.results_dir, exist_ok=True)
 
     def train_step(self, obs, action, reward, next_obs, done):
         """
-        Dummy training step (like a simplified PPO or A2C update).
-        In reality, would take a batch of rollouts.
+        Dummy training step.
         """
         obs = obs.to(self.device)
 
@@ -29,11 +34,8 @@ class RLTrainer:
         else:
             logits, value = output
 
-        logits = logits.squeeze(1) # (B, ActDim) or (B, 1, ActDim) if squeezed already?
-        # If logits is (B, ActDim) from step, squeeze(1) might fail or squeeze nothing.
-        if logits.dim() == 2:
-             pass # Already (B, ActDim)
-        elif logits.dim() == 3:
+        # Assuming logits shape (1, 1, ActDim) or similar.
+        if logits.dim() == 3:
              logits = logits.squeeze(1)
 
         # Dummy loss
@@ -60,22 +62,23 @@ class RLTrainer:
         plt.ylabel("Reward")
         plt.legend()
         plt.grid(True)
-        save_path = os.path.join(self.results_dir, "learning_curve.png")
-        plt.savefig(save_path)
-        print(f"Learning curve saved to {save_path}")
-        plt.close()
+        self.results.save_plot("learning_curve.png")
+
+    def execute(self):
+        self.results.log("Simulating RL training steps...")
+        final_loss = 0
+        for i in range(50):
+            # Dummy interaction: reward increases over time
+            obs = torch.randn(1, 10)
+            reward = i * 0.1 + torch.randn(1).item()
+            loss = self.train_step(obs, action=1, reward=reward, next_obs=obs, done=False)
+            final_loss = loss
+
+        self.results.log(f"Final Loss: {final_loss:.4f}")
+        self.results.save_json("rl_results.json", {"final_loss": final_loss, "steps": 50})
+        self.plot_learning_curve()
 
 if __name__ == "__main__":
     config = ANAConfig(observation_space=10, action_space=4, d_model=32)
-    agent = ANARLAgent(config)
-    trainer = RLTrainer(agent)
-
-    # Simulate an episode
-    print("Simulating RL training steps...")
-    for i in range(100):
-        # Dummy interaction: reward increases over time
-        obs = torch.randn(1, 10)
-        reward = i * 0.1 + torch.randn(1).item()
-        loss = trainer.train_step(obs, action=1, reward=reward, next_obs=obs, done=False)
-
-    trainer.plot_learning_curve()
+    exp = RLTrainerExperiment(config)
+    exp.run()

@@ -1,49 +1,66 @@
 import torch
 import torch.nn as nn
+import os
 from ana.models import ANAModel
 from ana.config import ANAConfig
-import os
+from ana.research.core import ExperimentBase, ExperimentRegistry
 
-def export_to_onnx(model, dummy_input, filepath="ana_model.onnx"):
-    """
-    Exports the ANA model to ONNX format.
+@ExperimentRegistry.register(phase=6, name="export_onnx")
+class OnnxExportExperiment(ExperimentBase):
+    @property
+    def name(self) -> str:
+        return "export_onnx"
 
-    Note: Parallel scan ops might need custom ONNX support or fallback to sequential.
-    Here we export the sequential version which is more likely to be supported.
-    """
-    print(f"Exporting model to {filepath}...")
-    model.eval()
+    @property
+    def phase(self) -> int:
+        return 6
 
-    # Ensure sequential mode is used for export compatibility
-    original_scan = model.config.use_parallel_scan
-    model.config.use_parallel_scan = False
+    def setup(self):
+        self.model = ANAModel(self.config).to("cpu") # Export usually on CPU
+        self.dummy_input = torch.randint(0, self.config.vocab_size, (1, 32))
 
-    try:
-        # Using fixed size for simplicity in this demo framework.
-        torch.onnx.export(
-            model,
-            dummy_input,
-            filepath,
-            export_params=True,
-            opset_version=18, # Use latest stable
-            do_constant_folding=True,
-            input_names=['input_ids'],
-            output_names=['logits', 'info_log'],
-        )
-        print("Export successful.")
-    except Exception as e:
-        print(f"Export failed: {e}")
-    finally:
-        model.config.use_parallel_scan = original_scan
+    def export_to_onnx(self, filepath="ana_model.onnx"):
+        """
+        Exports the ANA model to ONNX format.
+        """
+        self.results.log(f"Exporting model to {filepath}...")
+        self.model.eval()
+
+        # Ensure sequential mode is used for export compatibility
+        original_scan = self.model.config.use_parallel_scan
+        self.model.config.use_parallel_scan = False
+
+        try:
+            torch.onnx.export(
+                self.model,
+                self.dummy_input,
+                filepath,
+                export_params=True,
+                opset_version=18,
+                do_constant_folding=True,
+                input_names=['input_ids'],
+                output_names=['logits', 'info_log'],
+            )
+            self.results.log("Export successful.")
+            return True
+        except Exception as e:
+            self.results.log(f"Export failed: {e}")
+            return False
+        finally:
+            self.model.config.use_parallel_scan = original_scan
+
+    def execute(self):
+        filepath = self.results.get_path("ana_research_model.onnx")
+        success = self.export_to_onnx(filepath)
+
+        if success and os.path.exists(filepath):
+            self.results.log("Verified ONNX file exists.")
+            # We don't delete it here as the ResultManager keeps artifacts.
+            self.results.save_json("export_results.json", {"success": True, "path": filepath})
+        else:
+            self.results.save_json("export_results.json", {"success": False})
 
 if __name__ == "__main__":
     config = ANAConfig(vocab_size=100, d_model=32, num_layers=1)
-    model = ANAModel(config)
-    dummy = torch.randint(0, 100, (1, 32))
-    export_to_onnx(model, dummy)
-
-    if os.path.exists("ana_model.onnx"):
-        print("Verified ONNX file exists.")
-        os.remove("ana_model.onnx")
-        if os.path.exists("ana_model.onnx.data"):
-            os.remove("ana_model.onnx.data")
+    exp = OnnxExportExperiment(config)
+    exp.run()

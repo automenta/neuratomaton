@@ -1,14 +1,22 @@
 import torch
-from ana.models import ANAModel
-from ana.config import ANAConfig
 import time
 import sys
+from ana.models import ANAModel
+from ana.config import ANAConfig
+from ana.research.core import ExperimentBase, ExperimentRegistry
 
-class InferenceEngine:
-    def __init__(self, model: ANAModel, device: str = "cpu"):
-        self.model = model
-        self.device = device
-        self.model.to(device)
+@ExperimentRegistry.register(phase=2, name="inference")
+class InferenceExperiment(ExperimentBase):
+    @property
+    def name(self) -> str:
+        return "inference"
+
+    @property
+    def phase(self) -> int:
+        return 2
+
+    def setup(self):
+        self.model = ANAModel(self.config).to(self.device)
         self.model.eval()
 
     def generate_stream(self, prompt_ids, max_new_tokens=20, delay=0.05):
@@ -40,14 +48,11 @@ class InferenceEngine:
                     break
 
                 # Tokenize (Dummy: just map chars to int if possible, or random)
-                # In real scenario: tokenizer.encode(user_input)
-                # Here we just use a dummy start token sequence
                 prompt = torch.tensor([[1, 2, 3]]).to(self.device)
 
                 print("ANA: ", end="", flush=True)
                 for token in self.generate_stream(prompt, max_new_tokens=30):
                     # Detokenize (Dummy: print token ID)
-                    # In real scenario: tokenizer.decode([token])
                     print(f"{token}", end=" ", flush=True)
                 print("\n")
 
@@ -56,23 +61,41 @@ class InferenceEngine:
         print("\nGoodbye!")
 
     def run_demo(self):
-        print("Running non-interactive demo...")
+        self.results.log("Running non-interactive demo...")
         prompt = torch.tensor([[1, 2, 3]]).to(self.device)
         start = time.time()
         count = 0
-        print("Output: ", end="", flush=True)
+
+        output_tokens = []
         for token in self.generate_stream(prompt, delay=0.02):
-            print(token, end=" ", flush=True)
+            output_tokens.append(token)
             count += 1
+
         end = time.time()
-        print(f"\nGenerated {count} tokens in {end - start:.2f}s ({count/(end-start):.2f} tok/s)")
+        self.results.log(f"Generated tokens: {output_tokens}")
+        self.results.log(f"Generated {count} tokens in {end - start:.2f}s ({count/(end-start):.2f} tok/s)")
+        self.results.save_json("inference_results.json", {"tokens": output_tokens, "speed": count/(end-start)})
+
+    def execute(self):
+        # We can't easily capture the interactive flag from the base class config yet,
+        # but we can rely on an external flag or just default to demo.
+        # Since interactive mode is special, we might want to check if sys.argv has it,
+        # or if we added it to config. run_research.py adds `interactive` arg but doesn't pass it to config.
+        # Let's assume we run demo unless we hack a way to know.
+
+        # Actually, run_research.py doesn't put `interactive` into `ANAConfig`.
+        # However, `ExperimentBase` takes `config`.
+        # I should probably update `ANAConfig` to support `interactive` or handle it differently.
+        # For now, I'll check sys.argv as a fallback or just run demo.
+
+        is_interactive = "--interactive" in sys.argv
+
+        if is_interactive:
+            self.run_interactive()
+        else:
+            self.run_demo()
 
 if __name__ == "__main__":
     config = ANAConfig(vocab_size=100, d_model=32)
-    model = ANAModel(config)
-    engine = InferenceEngine(model)
-    # Check if interactive mode requested
-    if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
-        engine.run_interactive()
-    else:
-        engine.run_demo()
+    exp = InferenceExperiment(config)
+    exp.run()
