@@ -1,0 +1,222 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import numpy as np
+import os
+import json
+import logging
+import argparse
+from datetime import datetime
+
+from ..models.config import ANAConfig
+from ..models.core import ANAModel
+from ..utils.datasets import InductionHeadTask, MultiQueryAssociativeRecall, CopyTask
+from .comprehensive import ComparisonRunner
+
+class PotentialRevealer(ComparisonRunner):
+    """
+    Advanced experiments to reveal the true potential of ANA.
+    Focuses on:
+    1. Induction Capability (In-Context Learning)
+    2. Length Generalization (Algorithmic Stability)
+    3. Cognitive State Dynamics (Thinking vs Remembering)
+    """
+    def __init__(self, output_dir: str = "results/potential"):
+        super().__init__(output_dir=output_dir)
+        self.logger.info("Initialized PotentialRevealer")
+
+    def run_induction_head_experiment(self, quick: bool = False):
+        self.logger.info("=== EXPERIMENT: Induction Head Capability ===")
+
+        # Configuration
+        config = ANAConfig(
+            d_model=64,
+            state_dim=64,
+            num_layers=2,
+            track_count=2,
+            use_hololink=True,
+            use_controller=True
+        )
+
+        # Task
+        seq_len = 64
+        train_steps = 200 if quick else 1000
+
+        task = InductionHeadTask(num_samples=2000, seq_len=seq_len, vocab_size=40)
+        train_loader = DataLoader(task, batch_size=16, shuffle=True)
+        val_loader = DataLoader(task, batch_size=16, shuffle=False)
+
+        model = ANAModel(config)
+
+        # Train
+        self.logger.info("Training on Induction Head Task...")
+        self.train_model(model, train_loader, max_steps=train_steps)
+
+        # Evaluate
+        avg_loss, acc = self.evaluate_model(model, val_loader)
+        self.logger.info(f"Induction Head Accuracy: {acc*100:.2f}%")
+
+        # Visualize
+        self.save_visualization(model, task, "induction", "final")
+
+        # Save results
+        results = {
+            "task": "Induction Head",
+            "accuracy": acc,
+            "loss": avg_loss,
+            "config": str(config)
+        }
+        with open(os.path.join(self.output_dir, "induction_results.json"), 'w') as f:
+            json.dump(results, f, indent=2)
+
+        return results
+
+    def run_length_generalization_experiment(self, quick: bool = False):
+        self.logger.info("=== EXPERIMENT: Length Generalization ===")
+
+        # Train on short, test on long.
+        train_len = 64
+        test_lens = [64, 128, 256]
+        if quick: test_lens = [64, 128]
+
+        steps = 200 if quick else 1000
+
+        # Use CopyTask for length generalization (simplest algorithmic task)
+        # Note: CopyTask seq_len is length of *sequence to copy*.
+        # Total length is 2 * seq_len + 1.
+        # So for train_len=64, we want total sequence length around 64.
+        # seq_len = (64 - 1) / 2 approx 31.
+
+        train_seq_len_param = (train_len - 1) // 2
+        train_task = CopyTask(num_samples=2000, seq_len=train_seq_len_param, vocab_size=40)
+        train_loader = DataLoader(train_task, batch_size=16, shuffle=True)
+
+        config = ANAConfig(
+            d_model=64,
+            state_dim=64,
+            num_layers=2,
+            track_count=2,
+            use_hololink=True,
+            use_controller=True
+        )
+
+        model = ANAModel(config)
+        self.logger.info(f"Training on Length ~{train_len} (Copy Len {train_seq_len_param})...")
+        self.train_model(model, train_loader, max_steps=steps)
+
+        results = {}
+        for l in test_lens:
+            copy_len = (l - 1) // 2
+            test_task = CopyTask(num_samples=500, seq_len=copy_len, vocab_size=40)
+            test_loader = DataLoader(test_task, batch_size=16, shuffle=False)
+
+            loss, acc = self.evaluate_model(model, test_loader)
+            self.logger.info(f"Testing Length ~{l} (Copy Len {copy_len}): Accuracy {acc*100:.2f}%")
+            results[l] = acc
+
+            # Visualize extrapolation
+            if l > train_len:
+                self.save_visualization(model, test_task, "generalization", f"len{l}")
+
+        with open(os.path.join(self.output_dir, "generalization_results.json"), 'w') as f:
+            json.dump(results, f, indent=2)
+
+        return results
+
+    def run_multi_query_experiment(self, quick: bool = False):
+        self.logger.info("=== EXPERIMENT: Multi-Query Associative Recall ===")
+
+        steps = 200 if quick else 1000
+
+        task = MultiQueryAssociativeRecall(num_samples=2000, vocab_size=40, num_pairs=8, num_queries=3)
+        train_loader = DataLoader(task, batch_size=16, shuffle=True)
+        val_loader = DataLoader(task, batch_size=16, shuffle=False)
+
+        config = ANAConfig(
+            d_model=64, state_dim=64, num_layers=2, track_count=2,
+            use_hololink=True, use_controller=True
+        )
+
+        model = ANAModel(config)
+        self.logger.info("Training on Multi-Query AR...")
+        self.train_model(model, train_loader, max_steps=steps)
+
+        loss, acc = self.evaluate_model(model, val_loader)
+        self.logger.info(f"Multi-Query Accuracy: {acc*100:.2f}%")
+
+        self.save_visualization(model, task, "multiquery", "final")
+
+        results = {"accuracy": acc, "loss": loss}
+        with open(os.path.join(self.output_dir, "multiquery_results.json"), 'w') as f:
+            json.dump(results, f, indent=2)
+
+        return results
+
+    def generate_potential_report(self):
+        report_path = os.path.join(self.output_dir, "POTENTIAL_REPORT.md")
+        with open(report_path, 'w') as f:
+            f.write("# Scientifically Revealing ANA's Potential\n\n")
+            f.write(f"**Date:** {self.timestamp}\n\n")
+
+            # Induction
+            ind_path = os.path.join(self.output_dir, "induction_results.json")
+            if os.path.exists(ind_path):
+                with open(ind_path) as j: res = json.load(j)
+                f.write("## 1. Induction Head Capability\n")
+                f.write("The ability to perform in-context learning by completing patterns like `A ... B ... A -> B`.\n\n")
+                f.write(f"- **Accuracy:** {res['accuracy']*100:.2f}%\n")
+                if res['accuracy'] > 0.95:
+                    f.write("**Result:** ANA successfully implements induction heads.\n")
+                else:
+                    f.write("**Result:** ANA struggles with induction heads.\n")
+                f.write("\n")
+
+            # Generalization
+            gen_path = os.path.join(self.output_dir, "generalization_results.json")
+            if os.path.exists(gen_path):
+                with open(gen_path) as j: res = json.load(j)
+                f.write("## 2. Length Generalization\n")
+                f.write("Testing model performance on sequences longer than training data.\n\n")
+                f.write("| Length | Accuracy |\n| :--- | :---: |\n")
+                train_len = 64 # Hardcoded based on experiment
+                for l, acc in res.items():
+                    tag = "(Train)" if int(l) <= train_len else "(Extrapolate)"
+                    f.write(f"| {l} {tag} | {acc:.4f} |\n")
+                f.write("\n")
+
+            # Multi-Query
+            mq_path = os.path.join(self.output_dir, "multiquery_results.json")
+            if os.path.exists(mq_path):
+                with open(mq_path) as j: res = json.load(j)
+                f.write("## 3. Multi-Query Associative Recall\n")
+                f.write("Testing dense retrieval capacity.\n\n")
+                f.write(f"- **Accuracy:** {res['accuracy']*100:.2f}%\n\n")
+
+            f.write("## 4. Visual Analysis\n")
+            f.write("Check the `plots/` directory for 'Cognitive State' visualizations showing how ANA dynamically allocates attention between HoloLink (Memory) and Recurrent Tracks (Reasoning).\n")
+
+        self.logger.info(f"Report generated at {report_path}")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--quick", action="store_true", help="Run quick smoketest")
+    parser.add_argument("--output_dir", type=str, default="results/potential")
+    args = parser.parse_args()
+
+    revealer = PotentialRevealer(output_dir=args.output_dir)
+
+    print("=== Running Induction Experiment ===")
+    revealer.run_induction_head_experiment(quick=args.quick)
+
+    print("=== Running Length Generalization Experiment ===")
+    revealer.run_length_generalization_experiment(quick=args.quick)
+
+    print("=== Running Multi-Query Experiment ===")
+    revealer.run_multi_query_experiment(quick=args.quick)
+
+    revealer.generate_potential_report()
+    print(f"Done. Results in {revealer.output_dir}")
+
+if __name__ == "__main__":
+    main()

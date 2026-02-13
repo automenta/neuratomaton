@@ -263,10 +263,119 @@ class TextGenerationTask(Dataset):
         return x, y, mask
 
 
+class InductionHeadTask(Dataset):
+    """
+    Induction Head Task: Predict B given ... A B ... A.
+    Format: [SEQ] [A] [B] [SEQ] [A] -> Target [B]
+    """
+    def __init__(self, num_samples=1000, seq_len=64, vocab_size=40):
+        self.data = []
+        content_range = list(range(4, vocab_size))
+
+        for _ in range(num_samples):
+            # 1. Generate random sequence
+            seq = np.random.choice(content_range, size=seq_len, replace=True).tolist()
+
+            # 2. Pick a random pair (A, B)
+            a, b = np.random.choice(content_range, size=2, replace=False)
+
+            # 3. Insert (A, B) at a random position in the first half
+            idx_AB = np.random.randint(0, seq_len // 2)
+            seq[idx_AB] = a
+            seq[idx_AB + 1] = b
+
+            # 4. Insert A at a random position in the second half
+            idx_A_trigger = np.random.randint(seq_len // 2 + 1, seq_len - 1)
+            seq[idx_A_trigger] = a
+            # We enforce the NEXT token in input to be B so the target is B?
+            # No, we want the MODEL to predict B.
+            # The target corresponding to input at idx_A_trigger is B.
+            # So y[idx_A_trigger] = B.
+            # Which means seq[idx_A_trigger + 1] must be B.
+            seq[idx_A_trigger + 1] = b
+
+            # Recreate tensors
+            x = torch.tensor(seq[:-1], dtype=torch.long)
+            y_target = torch.tensor(seq[1:], dtype=torch.long)
+
+            # Mask: only predict B after the second A
+            mask = torch.zeros_like(y_target, dtype=torch.float)
+            mask[idx_A_trigger] = 1.0
+
+            self.data.append((x, y_target, mask))
+
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx): return self.data[idx]
+
+
+class MultiQueryAssociativeRecall(Dataset):
+    """
+    Associative Recall with multiple queries.
+    Input: [K1] [V1] [K2] [V2] ... [Q_K1] [Q_K2]
+    Target: ... [V1] [V2]
+    """
+    def __init__(self, num_samples=1000, vocab_size=40, num_pairs=8, num_queries=3):
+        self.data = []
+        TOK_KEY, TOK_VAL, TOK_QUERY = 1, 2, 3
+        content_range = list(range(4, vocab_size))
+
+        for _ in range(num_samples):
+            keys = np.random.choice(content_range, size=num_pairs, replace=False)
+            vals = np.random.choice([x for x in content_range if x not in keys], size=num_pairs, replace=False)
+
+            kv_seq = []
+            for k, v in zip(keys, vals):
+                kv_seq.extend([TOK_KEY, k, TOK_VAL, v])
+
+            # Queries
+            query_indices = np.random.choice(range(num_pairs), size=num_queries, replace=False)
+            query_keys = keys[query_indices]
+            query_vals = vals[query_indices]
+
+            base = len(kv_seq)
+            for qk, qv in zip(query_keys, query_vals):
+                kv_seq.extend([TOK_QUERY, qk, qv])
+
+            x = torch.tensor(kv_seq[:-1], dtype=torch.long)
+            y = torch.tensor(kv_seq[1:], dtype=torch.long)
+
+            mask = torch.zeros_like(y, dtype=torch.float)
+
+            # Mask the values corresponding to queries
+            # Query block: [Q, K, V]. We want to predict V given K.
+            # x indices for block i (after base):
+            # base + i*3 + 0: Q
+            # base + i*3 + 1: K -> Predict V (at y[base + i*3 + 1])
+            # base + i*3 + 2: V (not in x if last, but in y)
+
+            # x length is len(kv_seq) - 1.
+            # base is start of query part in kv_seq.
+
+            # Adjust base for x indexing (x matches kv_seq up to -1)
+            # Query part starts at 'base' index in kv_seq.
+            # So in x, it starts at 'base'.
+
+            for i in range(num_queries):
+                # We want to mask the position where input is K (so we predict V)
+                # K is at index `base + i*3 + 1` in kv_seq.
+                # So input x index is `base + i*3 + 1`.
+
+                mask_idx = base + i * 3 + 1
+                if mask_idx < len(mask):
+                    mask[mask_idx] = 1.0
+
+            self.data.append((x, y, mask))
+
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx): return self.data[idx]
+
+
 TASK_REGISTRY = {
     'copy': CopyTask,
     'reverse': ReverseTask,
     'associative_recall': AssociativeRecallDataset,
+    'induction_head': InductionHeadTask,
+    'multi_query_ar': MultiQueryAssociativeRecall,
     'shift': ShiftTask,
     'sort': SortTask,
     'add': AddTask,
