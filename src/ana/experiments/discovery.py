@@ -90,7 +90,7 @@ class DiscoveryEngine(ComparisonRunner):
         # 2. Copy (Memory Stability)
         # 3. Reasoning (Pointer Chain)
 
-        steps = 200 if quick else 1000
+        steps = 10 if quick else 1000
 
         tasks = {
             'Induction': InductionHeadTask(num_samples=2000, seq_len=64, vocab_size=40),
@@ -155,8 +155,8 @@ class DiscoveryEngine(ComparisonRunner):
         print(f"  > Dashboard Command: optuna-dashboard {self.storage_url}")
 
         # Objective: Maximize accuracy on a hard task (Multi-Query Associative Recall)
-        steps = 200 if quick else 600
-        n_trials = 5 if quick else 50 # Industrial scale implies more trials
+        steps = 10 if quick else 600
+        n_trials = 1 if quick else 50 # Industrial scale implies more trials
 
         task = MultiQueryAssociativeRecall(num_samples=1000, vocab_size=40, num_pairs=8, num_queries=3)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
@@ -268,7 +268,7 @@ class DiscoveryEngine(ComparisonRunner):
             c.state_dim = c.d_model # Ensure tied
             return c
 
-        steps = 200 if quick else 800
+        steps = 10 if quick else 800
         task = PointerChainTask(num_samples=1000, vocab_size=40, chain_len=5, noise_pairs=2)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
         val_loader = DataLoader(task, batch_size=16, shuffle=False)
@@ -364,7 +364,9 @@ class DiscoveryEngine(ComparisonRunner):
 
                 trials = self.tuning_results['trials']
                 # Just listing top 3
-                sorted_trials = sorted(trials, key=lambda x: x['value'], reverse=True)
+                # Filter out None values
+                valid_trials = [t for t in trials if t['value'] is not None]
+                sorted_trials = sorted(valid_trials, key=lambda x: x['value'], reverse=True)
                 f.write("\nTop 3 Configurations:\n")
                 for i, t in enumerate(sorted_trials[:3]):
                     f.write(f"{i+1}. Acc={t['value']:.4f}, Params={t['params']}\n")

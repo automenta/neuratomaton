@@ -107,7 +107,7 @@ class AutomatedResearcher:
         Criteria: > 90% accuracy.
         """
         self.logger.info("=== STAGE 1: Sanity Check ===")
-        steps = 50 if quick else 1000  # Less steps for quick
+        steps = 10 if quick else 1000  # Less steps for quick
 
         task = AssociativeRecallDataset(num_samples=1000, vocab_size=40, num_pairs=4, noise_len=32)
         train_loader = torch.utils.data.DataLoader(task, batch_size=16, shuffle=True)
@@ -140,7 +140,7 @@ class AutomatedResearcher:
         """
         self.logger.info("=== STAGE 2: Scaling Probe ===")
         seq_lens = [128, 512]
-        steps = 100 if quick else 500
+        steps = 10 if quick else 500
 
         results = self.runner.run_scaling_benchmark(seq_lens=seq_lens, steps_per_len=steps, quick=False)
 
@@ -173,7 +173,7 @@ class AutomatedResearcher:
             self.runner.run_scaling_benchmark(seq_lens=large_lens, steps_per_len=500, quick=False)
 
         # 2. Ablation
-        steps = 100 if quick else 1000
+        steps = 10 if quick else 1000
         self.runner.run_ablation_study(steps=steps, quick=False)
 
         # 3. Throughput

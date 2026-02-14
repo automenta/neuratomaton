@@ -42,7 +42,7 @@ class PotentialRevealer(ComparisonRunner):
 
         # Task
         seq_len = 64
-        train_steps = 200 if quick else 1000
+        train_steps = 10 if quick else 1000
 
         task = InductionHeadTask(num_samples=2000, seq_len=seq_len, vocab_size=40)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
@@ -79,9 +79,9 @@ class PotentialRevealer(ComparisonRunner):
         # Train on short, test on long.
         train_len = 64
         test_lens = [64, 128, 256]
-        if quick: test_lens = [64, 128]
+        if quick: test_lens = [64]
 
-        steps = 200 if quick else 1000
+        steps = 10 if quick else 1000
 
         # Use CopyTask for length generalization (simplest algorithmic task)
         # Note: CopyTask seq_len is length of *sequence to copy*.
@@ -128,7 +128,7 @@ class PotentialRevealer(ComparisonRunner):
     def run_multi_query_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Multi-Query Associative Recall ===")
 
-        steps = 200 if quick else 1000
+        steps = 10 if quick else 1000
 
         task = MultiQueryAssociativeRecall(num_samples=2000, vocab_size=40, num_pairs=8, num_queries=3)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
@@ -157,7 +157,7 @@ class PotentialRevealer(ComparisonRunner):
     def run_reasoning_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Reasoning (Thinking Steps) ===")
 
-        steps = 200 if quick else 1000
+        steps = 10 if quick else 1000
         chain_len = 5 # Hard task
 
         task = PointerChainTask(num_samples=2000, vocab_size=40, chain_len=chain_len, noise_pairs=2)
@@ -193,7 +193,7 @@ class PotentialRevealer(ComparisonRunner):
     def run_noise_robustness_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Noise Robustness ===")
 
-        steps = 200 if quick else 1000
+        steps = 10 if quick else 1000
 
         # Train on Clean, Test on Noisy
         clean_task = CopyTask(num_samples=2000, seq_len=32, vocab_size=40)
@@ -246,7 +246,7 @@ class PotentialRevealer(ComparisonRunner):
         # Standard: Train directly on Hard (8 pairs).
         # Curriculum: Train on 4 pairs -> 6 pairs -> 8 pairs.
 
-        steps_per_stage = 100 if quick else 400
+        steps_per_stage = 10 if quick else 400
 
         config = ANAConfig(d_model=64, state_dim=64, num_layers=2, track_count=2, use_hololink=True, use_controller=True)
 
@@ -292,10 +292,10 @@ class PotentialRevealer(ComparisonRunner):
 
         if quick:
             d_models = [32]
-            track_counts = [1, 2]
+            track_counts = [1]
 
         results = {}
-        steps = 100 if quick else 300
+        steps = 10 if quick else 300
 
         task = AssociativeRecallDataset(num_samples=1000, vocab_size=40, num_pairs=4, noise_len=16)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
