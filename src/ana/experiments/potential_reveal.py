@@ -11,7 +11,7 @@ from datetime import datetime
 
 from ..models.config import ANAConfig
 from ..models.core import ANAModel
-from ..utils.datasets import InductionHeadTask, MultiQueryAssociativeRecall, CopyTask, PointerChainTask
+from ..utils.datasets import InductionHeadTask, MultiQueryAssociativeRecall, CopyTask, PointerChainTask, AssociativeRecallDataset
 from .comprehensive import ComparisonRunner
 
 class PotentialRevealer(ComparisonRunner):
@@ -237,6 +237,92 @@ class PotentialRevealer(ComparisonRunner):
 
         return results
 
+    def run_curriculum_experiment(self, quick: bool = False):
+        self.logger.info("=== EXPERIMENT: Curriculum Learning ===")
+
+        # Goal: Train model on increasing difficulty.
+        # Task: Associative Recall with increasing number of pairs.
+
+        # Standard: Train directly on Hard (8 pairs).
+        # Curriculum: Train on 4 pairs -> 6 pairs -> 8 pairs.
+
+        steps_per_stage = 100 if quick else 400
+
+        config = ANAConfig(d_model=64, state_dim=64, num_layers=2, track_count=2, use_hololink=True, use_controller=True)
+
+        # 1. Baseline: Direct Training
+        self.logger.info("Baseline: Training directly on Hard Task (8 pairs)...")
+        model_base = ANAModel(config)
+        task_hard = AssociativeRecallDataset(num_samples=2000, vocab_size=40, num_pairs=8, noise_len=16)
+        train_loader_hard = DataLoader(task_hard, batch_size=16, shuffle=True)
+        val_loader_hard = DataLoader(task_hard, batch_size=16, shuffle=False)
+
+        self.train_model(model_base, train_loader_hard, max_steps=steps_per_stage * 3)
+        _, acc_base = self.evaluate_model(model_base, val_loader_hard)
+        self.logger.info(f"Baseline Accuracy: {acc_base*100:.2f}%")
+
+        # 2. Curriculum
+        self.logger.info("Curriculum: Training on Easy -> Medium -> Hard...")
+        model_curr = ANAModel(config)
+
+        difficulties = [4, 6, 8]
+        for diff in difficulties:
+            self.logger.info(f"Curriculum Stage: {diff} pairs")
+            task_curr = AssociativeRecallDataset(num_samples=2000, vocab_size=40, num_pairs=diff, noise_len=16)
+            loader_curr = DataLoader(task_curr, batch_size=16, shuffle=True)
+            self.train_model(model_curr, loader_curr, max_steps=steps_per_stage)
+
+        _, acc_curr = self.evaluate_model(model_curr, val_loader_hard)
+        self.logger.info(f"Curriculum Accuracy: {acc_curr*100:.2f}%")
+
+        results = {"baseline": acc_base, "curriculum": acc_curr}
+        with open(os.path.join(self.output_dir, "curriculum_results.json"), 'w') as f:
+            json.dump(results, f, indent=2)
+
+        return results
+
+    def run_sensitivity_experiment(self, quick: bool = False):
+        self.logger.info("=== EXPERIMENT: Hyperparameter Sensitivity ===")
+
+        # Grid Search on key params
+        # d_model vs track_count
+
+        d_models = [32, 64]
+        track_counts = [1, 2, 4]
+
+        if quick:
+            d_models = [32]
+            track_counts = [1, 2]
+
+        results = {}
+        steps = 100 if quick else 300
+
+        task = AssociativeRecallDataset(num_samples=1000, vocab_size=40, num_pairs=4, noise_len=16)
+        train_loader = DataLoader(task, batch_size=16, shuffle=True)
+        val_loader = DataLoader(task, batch_size=16, shuffle=False)
+
+        for dm in d_models:
+            for tc in track_counts:
+                name = f"d{dm}_t{tc}"
+                self.logger.info(f"Testing Config: {name}")
+
+                config = ANAConfig(
+                    d_model=dm, state_dim=dm, num_layers=2, track_count=tc,
+                    key_dim=dm//2, use_hololink=True, use_controller=True
+                )
+
+                model = ANAModel(config)
+                self.train_model(model, train_loader, max_steps=steps)
+                _, acc = self.evaluate_model(model, val_loader)
+
+                results[name] = acc
+                self.logger.info(f"{name}: {acc*100:.2f}%")
+
+        with open(os.path.join(self.output_dir, "sensitivity_results.json"), 'w') as f:
+            json.dump(results, f, indent=2)
+
+        return results
+
     def generate_potential_report(self):
         report_path = os.path.join(self.output_dir, "POTENTIAL_REPORT.md")
         with open(report_path, 'w') as f:
@@ -297,7 +383,27 @@ class PotentialRevealer(ComparisonRunner):
                 f.write(f"- **Clean Accuracy:** {res['clean']*100:.2f}%\n")
                 f.write(f"- **Noisy Accuracy:** {res['noisy']*100:.2f}%\n\n")
 
-            f.write("## 6. Visual Analysis\n")
+            # Curriculum
+            curr_path = os.path.join(self.output_dir, "curriculum_results.json")
+            if os.path.exists(curr_path):
+                with open(curr_path) as j: res = json.load(j)
+                f.write("## 6. Curriculum Learning\n")
+                f.write("Benefits of gradual difficulty increase.\n\n")
+                f.write(f"- **Baseline:** {res['baseline']*100:.2f}%\n")
+                f.write(f"- **Curriculum:** {res['curriculum']*100:.2f}%\n\n")
+
+            # Sensitivity
+            sens_path = os.path.join(self.output_dir, "sensitivity_results.json")
+            if os.path.exists(sens_path):
+                with open(sens_path) as j: res = json.load(j)
+                f.write("## 7. Hyperparameter Sensitivity\n")
+                f.write("Stability across configurations.\n\n")
+                f.write("| Config | Accuracy |\n| :--- | :---: |\n")
+                for name, acc in res.items():
+                    f.write(f"| {name} | {acc:.4f} |\n")
+                f.write("\n")
+
+            f.write("## 8. Visual Analysis\n")
             f.write("Check the `plots/` directory for 'Cognitive State' visualizations showing how ANA dynamically allocates attention between HoloLink (Memory) and Recurrent Tracks (Reasoning).\n")
 
         self.logger.info(f"Report generated at {report_path}")
@@ -306,24 +412,53 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true", help="Run quick smoketest")
     parser.add_argument("--output_dir", type=str, default="results/potential")
+
+    # Flags for individual experiments
+    parser.add_argument("--induction", action="store_true")
+    parser.add_argument("--generalization", action="store_true")
+    parser.add_argument("--multiquery", action="store_true")
+    parser.add_argument("--reasoning", action="store_true")
+    parser.add_argument("--noise", action="store_true")
+    parser.add_argument("--curriculum", action="store_true")
+    parser.add_argument("--sensitivity", action="store_true")
+    parser.add_argument("--all", action="store_true", help="Run all experiments")
+
     args = parser.parse_args()
+
+    # Default to all if no specific flag set
+    if not (args.induction or args.generalization or args.multiquery or
+            args.reasoning or args.noise or args.curriculum or args.sensitivity):
+        args.all = True
 
     revealer = PotentialRevealer(output_dir=args.output_dir)
 
-    print("=== Running Induction Experiment ===")
-    revealer.run_induction_head_experiment(quick=args.quick)
+    if args.all or args.induction:
+        print("=== Running Induction Experiment ===")
+        revealer.run_induction_head_experiment(quick=args.quick)
 
-    print("=== Running Length Generalization Experiment ===")
-    revealer.run_length_generalization_experiment(quick=args.quick)
+    if args.all or args.generalization:
+        print("=== Running Length Generalization Experiment ===")
+        revealer.run_length_generalization_experiment(quick=args.quick)
 
-    print("=== Running Multi-Query Experiment ===")
-    revealer.run_multi_query_experiment(quick=args.quick)
+    if args.all or args.multiquery:
+        print("=== Running Multi-Query Experiment ===")
+        revealer.run_multi_query_experiment(quick=args.quick)
 
-    print("=== Running Reasoning Experiment ===")
-    revealer.run_reasoning_experiment(quick=args.quick)
+    if args.all or args.reasoning:
+        print("=== Running Reasoning Experiment ===")
+        revealer.run_reasoning_experiment(quick=args.quick)
 
-    print("=== Running Noise Robustness Experiment ===")
-    revealer.run_noise_robustness_experiment(quick=args.quick)
+    if args.all or args.noise:
+        print("=== Running Noise Robustness Experiment ===")
+        revealer.run_noise_robustness_experiment(quick=args.quick)
+
+    if args.all or args.curriculum:
+        print("=== Running Curriculum Experiment ===")
+        revealer.run_curriculum_experiment(quick=args.quick)
+
+    if args.all or args.sensitivity:
+        print("=== Running Sensitivity Experiment ===")
+        revealer.run_sensitivity_experiment(quick=args.quick)
 
     revealer.generate_potential_report()
     print(f"Done. Results in {revealer.output_dir}")
