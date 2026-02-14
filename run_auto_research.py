@@ -9,6 +9,7 @@ sys.path.append(os.path.join(os.getcwd(), 'src'))
 from ana.experiments.automated_researcher import AutomatedResearcher
 from ana.experiments.potential_reveal import PotentialRevealer
 from ana.experiments.discovery import DiscoveryEngine
+from ana.experiments.interactive_tuner import InteractiveTuner
 
 def main():
     parser = argparse.ArgumentParser(description="ANA Automated Research Pipeline")
@@ -21,6 +22,7 @@ def main():
     parser.add_argument("--validation", action="store_true", help="Run Phase 1: Validation & Scaling")
     parser.add_argument("--potential", action="store_true", help="Run Phase 2: Potential & Capabilities")
     parser.add_argument("--discovery", action="store_true", help="Run Phase 3: Scientific Discovery (Baselines, Optuna, Ablation)")
+    parser.add_argument("--interactive", action="store_true", help="Run Interactive Hyperparameter Tuner")
     parser.add_argument("--all", action="store_true", help="Run all phases")
 
     # Flags for potential experiments (Phase 2 sub-flags)
@@ -33,6 +35,19 @@ def main():
     parser.add_argument("--sensitivity", action="store_true")
 
     args = parser.parse_args()
+
+    # Interactive Mode takes precedence
+    if args.interactive:
+        print("="*60)
+        print("ANA INTERACTIVE TUNER")
+        print("Starting interactive session...")
+        print("="*60)
+        tuner = InteractiveTuner(output_dir=args.output_dir)
+        try:
+            tuner.cmdloop()
+        except KeyboardInterrupt:
+            tuner.do_exit(None)
+        return
 
     # Check if any potential sub-flags are set, imply potential phase
     potential_flags = [args.induction, args.generalization, args.multiquery,
