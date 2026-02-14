@@ -502,3 +502,34 @@ TASK_REGISTRY = {
     'add': AddTask,
     'text_generation': TextGenerationTask,
 }
+class SeriesPredictionTask(Dataset):
+    """
+    Synthetic time-series prediction task (e.g., sine waves).
+    """
+    def __init__(self, num_samples=1000, seq_len=32, dim=1):
+        self.num_samples = num_samples
+        self.seq_len = seq_len
+        self.dim = dim
+        self.data = []
+
+        for _ in range(num_samples):
+            # Random sine wave parameters
+            freq = np.random.uniform(0.1, 2.0, size=(dim,))
+            phase = np.random.uniform(0, 2*np.pi, size=(dim,))
+
+            t = np.linspace(0, 4*np.pi, seq_len + 1)
+            wave = np.stack([np.sin(freq[d]*t + phase[d]) for d in range(dim)], axis=1)
+
+            # Add noise
+            wave += np.random.normal(0, 0.05, wave.shape)
+
+            x = torch.tensor(wave[:-1], dtype=torch.float32)
+            y = torch.tensor(wave[1:], dtype=torch.float32)
+            mask = torch.ones(seq_len, dtype=torch.float32)
+
+            self.data.append((x, y, mask))
+
+    def __len__(self): return self.num_samples
+    def __getitem__(self, idx): return self.data[idx]
+
+TASK_REGISTRY['series'] = SeriesPredictionTask

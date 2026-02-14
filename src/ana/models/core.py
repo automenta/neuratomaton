@@ -373,15 +373,20 @@ class ANAModel(nn.Module):
         self.norm = nn.LayerNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size)
 
-    def forward_parallel(self, input_ids, return_info=False, force_prob=0.0):
+    def forward_features_parallel(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
         if self.config.max_thinking_steps > 0:
-            return self.forward_sequential(input_ids, return_info, force_prob)
+            return self.forward_features_sequential(input_ids, inputs_embeds, return_info, force_prob)
 
-        x = self.embedding(input_ids)
+        if inputs_embeds is not None:
+            x = inputs_embeds
+            input_shape = inputs_embeds.shape[:-1]
+        else:
+            x = self.embedding(input_ids)
+            input_shape = input_ids.shape
 
         # Add position encoding
-        batch, seq_len = input_ids.shape
-        pos_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, seq_len)
+        batch, seq_len = input_shape
+        pos_ids = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch, seq_len)
         pos_encoding = self.position_encoding(pos_ids)
         x = x + pos_encoding
         info_log = {'layers': [{} for _ in range(self.config.num_layers)]}
@@ -457,15 +462,22 @@ class ANAModel(nn.Module):
                     layer_stats['halt_gate'] = torch.sigmoid(g_halt).detach().cpu() # [Batch, Seq, 1]
 
         x = self.norm(x)
-        logits = self.output_head(x)
-        return logits, info_log
+        return x, info_log
 
-    def forward_sequential(self, input_ids, return_info=False, force_prob=0.0):
-        x = self.embedding(input_ids)
+    def forward_sequential(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+        return self.forward_features_sequential(input_ids, inputs_embeds, return_info, force_prob)
+
+    def forward_features_sequential(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+        if inputs_embeds is not None:
+            x = inputs_embeds
+            input_shape = inputs_embeds.shape[:-1]
+        else:
+            x = self.embedding(input_ids)
+            input_shape = input_ids.shape
 
         # Add position encoding
-        batch, seq_len = input_ids.shape
-        pos_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, seq_len)
+        batch, seq_len = input_shape
+        pos_ids = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch, seq_len)
         pos_encoding = self.position_encoding(pos_ids)
         x = x + pos_encoding
         batch, seq_len, _ = x.shape
@@ -621,14 +633,116 @@ class ANAModel(nn.Module):
 
         output_seq = torch.stack(final_layer_outputs, dim=1)
         output_seq = self.norm(output_seq)
-        logits = self.output_head(output_seq)
+        return output_seq, info_log
+
+    def forward_features_step(self, inputs_embeds, state=None):
+        """
+        Single step forward for RL/Series generation.
+        Args:
+            inputs_embeds: [Batch, D_Model] (No time dim)
+            state: Tuple (h_states, m_states)
+                h_states: List[List[Tensor]] - [Layer][Track] -> [Batch, State_Dim]
+                m_states: List[Tensor] - [Layer] -> [Batch, Key_Dim, Val_Dim]
+        """
+        x = inputs_embeds
+        batch_size = x.size(0)
+
+        if state is None:
+            h_states = [[None] * self.config.track_count for _ in range(self.config.num_layers)]
+            m_states = [None] * self.config.num_layers
+        else:
+            h_states, m_states = state
+
+        new_h_states = []
+        new_m_states = []
+
+        for i, layer in enumerate(self.layers):
+            tracks = layer['tracks']
+
+            # 1. Controller
+            track_outputs = None
+            g_ret = None
+
+            if self.config.use_controller:
+                ctl = layer['controller']
+                track_outputs, g_ret, _ = ctl(x)
+
+            # 2. Tracks
+            track_results = []
+            track_mix_logits = []
+            layer_h_states = []
+
+            for t_idx, track in enumerate(tracks):
+                gates = None
+                mix = None
+                if track_outputs is not None:
+                    g_alpha, g_beta, g_mix = track_outputs[t_idx]
+                    gates = (g_alpha, g_beta)
+                    mix = g_mix
+
+                # State handling
+                h_prev = h_states[i][t_idx] if h_states[i][t_idx] is not None else None
+                yt, ht = track(x, h_prev, dynamic_gates=gates)
+
+                layer_h_states.append(ht)
+                track_results.append(yt)
+
+                if mix is not None:
+                    track_mix_logits.append(mix)
+                else:
+                    track_mix_logits.append(torch.zeros(batch_size, 1, device=x.device))
+
+            new_h_states.append(layer_h_states)
+
+            # Mixing
+            stacked_results = torch.stack(track_results, dim=1)
+            stacked_mix = torch.stack(track_mix_logits, dim=1)
+            mix_weights = torch.softmax(stacked_mix, dim=1)
+            layer_out = (stacked_results * mix_weights).sum(dim=1)
+
+            # 3. HoloLink
+            qt = 0
+            m_next = None
+            if self.config.use_hololink:
+                holo = layer['holo']
+                ht_combined = torch.cat(layer_h_states, dim=-1)
+                m_prev = m_states[i]
+                qt, m_next = holo(x, ht_combined, m_prev)
+
+            new_m_states.append(m_next)
+
+            # 4. Merge
+            if self.config.use_controller and self.config.use_hololink:
+                ret_gate = torch.sigmoid(g_ret)
+                layer_out = layer_out + ret_gate * qt
+            elif self.config.use_hololink:
+                layer_out = layer_out + qt
+
+            x = x + layer_out # Residual
+
+        x = self.norm(x)
+        return x, (new_h_states, new_m_states)
+
+    def forward_parallel(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+        x, info_log = self.forward_features_parallel(input_ids, inputs_embeds, return_info, force_prob)
+        logits = self.output_head(x)
         return logits, info_log
 
-    def forward(self, input_ids, return_info=False, force_prob=0.0):
+    def forward_sequential(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+        x, info_log = self.forward_features_sequential(input_ids, inputs_embeds, return_info, force_prob)
+        logits = self.output_head(x)
+        return logits, info_log
+
+    def forward_step(self, inputs_embeds, state=None):
+        x, new_state = self.forward_features_step(inputs_embeds, state)
+        logits = self.output_head(x)
+        return logits, new_state
+
+    def forward(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
         if self.config.use_parallel_scan and self.config.max_thinking_steps == 0:
-             return self.forward_parallel(input_ids, return_info, force_prob)
+             return self.forward_parallel(input_ids, inputs_embeds, return_info, force_prob)
         else:
-             return self.forward_sequential(input_ids, return_info, force_prob)
+             return self.forward_sequential(input_ids, inputs_embeds, return_info, force_prob)
 
 
 class BaselineSSM(nn.Module):
@@ -659,3 +773,67 @@ class BaselineSSM(nn.Module):
         x = self.norm(x)
         logits = self.output_head(x)
         return logits, []
+class ANARLAgent(nn.Module):
+    """
+    Phase 4: RL Agent wrapping ANA.
+    """
+    def __init__(self, config: ANAConfig):
+        super().__init__()
+        self.config = config
+        self.ana = ANAModel(config)
+
+        self.input_proj = nn.Linear(config.observation_space, config.d_model)
+        self.policy_head = nn.Linear(config.d_model, config.action_space)
+        self.value_head = nn.Linear(config.d_model, 1)
+
+    def forward(self, obs, state=None):
+        """
+        Single step forward for RL.
+        obs: [Batch, Obs_Dim]
+        """
+        x = self.input_proj(obs)
+        features, next_state = self.ana.forward_features_step(x, state)
+
+        policy_logits = self.policy_head(features)
+        value = self.value_head(features)
+
+        return policy_logits, value, next_state
+
+class ANASeriesModel(nn.Module):
+    """
+    Phase 5: Time Series Model wrapping ANA.
+    """
+    def __init__(self, config: ANAConfig):
+        super().__init__()
+        self.config = config
+        self.ana = ANAModel(config)
+
+        self.input_proj = nn.Linear(config.series_dim, config.d_model)
+        self.output_proj = nn.Linear(config.d_model, config.series_dim)
+
+    def forward(self, x, state=None):
+        """
+        Single step forward for series prediction.
+        x: [Batch, Series_Dim]
+        """
+        embeds = self.input_proj(x)
+        features, next_state = self.ana.forward_features_step(embeds, state)
+        pred = self.output_proj(features)
+
+        return pred, next_state
+
+    def forward_sequence(self, x_seq):
+        """
+        Process a sequence for training.
+        x_seq: [Batch, Seq, Series_Dim]
+        """
+        embeds = self.input_proj(x_seq)
+
+        # Use parallel or sequential features
+        if self.config.use_parallel_scan and self.config.max_thinking_steps == 0:
+             features, _ = self.ana.forward_features_parallel(inputs_embeds=embeds)
+        else:
+             features, _ = self.ana.forward_features_sequential(inputs_embeds=embeds)
+
+        pred_seq = self.output_proj(features)
+        return pred_seq

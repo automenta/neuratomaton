@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--validation", action="store_true", help="Run Phase 1: Validation & Scaling")
     parser.add_argument("--potential", action="store_true", help="Run Phase 2: Potential & Capabilities")
     parser.add_argument("--discovery", action="store_true", help="Run Phase 3: Scientific Discovery (Baselines, Optuna, Ablation)")
+    parser.add_argument("--action", action="store_true", help="Run Phase 4: Action & RL")
+    parser.add_argument("--series", action="store_true", help="Run Phase 5: Time Series & Audio")
     parser.add_argument("--all", action="store_true", help="Run all phases")
 
     # Flags for potential experiments (Phase 2 sub-flags)
@@ -49,9 +51,11 @@ def main():
         args.validation = True
         args.potential = True
         args.discovery = True
+        args.action = True
+        args.series = True
 
     # If nothing specified (and no implied potential), default to Discovery
-    if not (args.validation or args.potential or args.discovery):
+    if not (args.validation or args.potential or args.discovery or args.action or args.series):
         print("No phase specified. Defaulting to Phase 3: Discovery.")
         args.discovery = True
 
@@ -90,6 +94,26 @@ def main():
             exp_cls = ExperimentRegistry.get(3, "discovery")
             if not exp_cls:
                 print("Error: Discovery experiment not found in registry.")
+            else:
+                exp = exp_cls()
+                exp.run(study_name=args.study_name, quick=args.quick)
+
+        # Phase 4: Action
+        if args.action:
+            print("\n\033[1;35m>>> PHASE 4: ACTION & RL <<<\033[0m")
+            exp_cls = ExperimentRegistry.get(4, "action")
+            if not exp_cls:
+                print("Error: Action experiment not found in registry.")
+            else:
+                exp = exp_cls()
+                exp.run(study_name=args.study_name, quick=args.quick)
+
+        # Phase 5: Series
+        if args.series:
+            print("\n\033[1;35m>>> PHASE 5: SERIES & AUDIO <<<\033[0m")
+            exp_cls = ExperimentRegistry.get(5, "series")
+            if not exp_cls:
+                print("Error: Series experiment not found in registry.")
             else:
                 exp = exp_cls()
                 exp.run(study_name=args.study_name, quick=args.quick)
