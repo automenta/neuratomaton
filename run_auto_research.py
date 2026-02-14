@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Run in fast smoketest mode")
     parser.add_argument("--tune", action="store_true", help="Force hyperparameter tuning stage")
     parser.add_argument("--trials", type=int, default=20, help="Number of tuning trials")
+    parser.add_argument("--study_name", type=str, default="main", help="Name of the study (accumulates results in results/<name>/)")
     parser.add_argument("--output_dir", type=str, default="results/automated", help="Output directory (deprecated, managed by framework)")
 
     # Phases
@@ -57,6 +58,7 @@ def main():
     print("="*60)
     print("ANA AUTOMATED RESEARCHER (Turnkey Edition)")
     print("Maximally automated discovery process.")
+    print(f"Study Name: {args.study_name}")
     print(f"Quick Mode: {args.quick}")
     print("="*60)
 
@@ -69,7 +71,7 @@ def main():
                 print("Error: Validation experiment not found in registry.")
             else:
                 exp = exp_cls()
-                exp.run(quick=args.quick, tune=args.tune, trials=args.trials)
+                exp.run(study_name=args.study_name, quick=args.quick, tune=args.tune, trials=args.trials)
 
         # Phase 2: Potential
         if args.potential:
@@ -80,7 +82,7 @@ def main():
             else:
                 exp = exp_cls()
                 # Pass active sub-experiments if any
-                exp.run(quick=args.quick, sub_experiments=active_potential_flags)
+                exp.run(study_name=args.study_name, quick=args.quick, sub_experiments=active_potential_flags)
 
         # Phase 3: Discovery
         if args.discovery:
@@ -90,7 +92,7 @@ def main():
                 print("Error: Discovery experiment not found in registry.")
             else:
                 exp = exp_cls()
-                exp.run(quick=args.quick)
+                exp.run(study_name=args.study_name, quick=args.quick)
 
         print("\n\033[1;32m=== RESEARCH COMPLETE ===\033[0m")
 
