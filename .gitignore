@@ -41,6 +41,9 @@ samples/
 *.log
 logs/
 
+# DB
+*.db
+
 # OS
 .DS_Store
 Thumbs.db
