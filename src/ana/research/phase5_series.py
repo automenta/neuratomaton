@@ -59,7 +59,7 @@ class SeriesExperiment(ExperimentBase):
 
                 if loss.item() < best_loss:
                     best_loss = loss.item()
-                    torch.save(model.state_dict(), os.path.join(self.results.output_dir, "best_series_model.pt"))
+                    # torch.save(model.state_dict(), os.path.join(self.results.output_dir, "best_series_model.pt"))
 
                 step += 1
 

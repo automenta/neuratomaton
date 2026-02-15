@@ -103,7 +103,7 @@ class ActionExperiment(ExperimentBase):
 
             if ep_reward > best_reward:
                 best_reward = ep_reward
-                torch.save(agent.state_dict(), os.path.join(self.results.output_dir, "best_agent.pt"))
+                # torch.save(agent.state_dict(), os.path.join(self.results.output_dir, "best_agent.pt"))
 
             if (ep+1) % 10 == 0:
                 avg_r = np.mean(stats['rewards'][-10:])
