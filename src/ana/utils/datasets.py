@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 import random
 import os
 import numpy as np
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Any
 
 
 class TextDataset(Dataset):
@@ -128,12 +128,6 @@ class CopyTask(Dataset):
 class PointerChainTask(Dataset):
     """
     Pointer Chain Execution: Given pairs (A->B, B->C, ...), predict the end of the chain starting from a Query.
-    Input: [A] [B] [B] [C] [C] [D] ... [Q] [A]
-    Target: ... [B] [C] [D] (Sequential prediction of the path)
-
-    Or simpler: Just predict the final node after K hops?
-    For sequence modeling, it's better to predict the full path or just the next token.
-    Here we define it as: Given random pairs, and a query, predict the next K tokens in the chain.
     """
     def __init__(self, num_samples=1000, vocab_size=40, chain_len=3, noise_pairs=0):
         self.data = []
@@ -166,57 +160,7 @@ class PointerChainTask(Dataset):
             start_node = nodes[0]
             seq.extend([TOK_QUERY, start_node])
 
-            # Target sequence: The rest of the chain [n2, n3, ..., nk]
-            # But we need to align x and y.
-            # x: ... [Q] [n1] -> Predict [n2]
-            # Then feed [n2] -> Predict [n3]?
-            # Standard AR setup:
-            # Input: ... [Q] [n1] [n2] ... [nk-1]
-            # Target: ...      [n2] [n3] ... [nk]
-
             chain_rest = nodes[1:].tolist()
-
-            # Full sequence for training
-            # We provide the chain tokens in input so model learns to follow?
-            # Or we only provide [Q] [n1] and expect it to output [n2] ... [nk] purely from memory?
-            # "Pure Pointer Execution" means retrieving from memory.
-
-            # If we just put [Q] [n1], and target is [n2], that's 1 hop.
-            # To do multi-hop generation, we feed the predicted token back.
-            # For training, we use teacher forcing:
-            # Input: ... [Q] [n1] [n2] ... [nk-1]
-            # Target: ...     [n2] [n3] ... [nk]
-
-            suffix_input = chain_rest[:-1] # [n2, ..., nk-1]
-            suffix_target = chain_rest     # [n2, ..., nk]
-
-            # Input x includes the prompt and the chain steps (except last)
-            # prompt: [Q] [n1]
-
-            full_input = seq + suffix_input
-            full_target = seq[1:] + [TOK_QUERY, start_node] + suffix_target
-            # Wait, y must be shifted x.
-            # x: [Seq] [Q] [n1] [n2] ... [nk-1]
-            # y:       [Q] [n1] [n2] ... [nk]
-            # The part [Seq] [Q] [n1] is context.
-            # We want to predict [n2] given [n1] and Context.
-
-            x_seq = seq + suffix_input
-            y_seq = seq[1:] + [suffix_target[0]] # Aligning is tricky with lists
-            # Let's rebuild carefully.
-
-            # Context: [K V ... K V]
-            # Prompt: [Q] [n1]
-            # Completion: [n2] [n3] ... [nk]
-
-            # Full X: Context + [Q] + [n1] + [n2] ... + [nk-1]
-            # Full Y: ...     + [n1] + [n2] + [n3] ... + [nk]
-
-            x = torch.tensor(seq + chain_rest[:-1], dtype=torch.long)
-
-            # Construct Y by shifting X left and appending last target
-            # But 'seq' part of Y is just shifting seq.
-            # The prediction starts after [Q] [n1].
 
             # Let's just construct the full sequence and shift.
             full_seq = seq + chain_rest
@@ -225,15 +169,6 @@ class PointerChainTask(Dataset):
             y_t = torch.tensor(full_seq[1:], dtype=torch.long)
 
             mask = torch.zeros_like(y_t, dtype=torch.float)
-
-            # Mask the chain prediction part
-            # The chain part starts after `len(seq)`.
-            # `seq` ends with [Q] [n1].
-            # So `len(seq)` is index of first prediction [n2] in y_t?
-            # len(seq) in full_seq is the index of [n2].
-            # y_t has length len(full_seq) - 1.
-            # y_t[i] corresponds to prediction at step i.
-            # step i=len(seq)-1 is input [n1] (last of seq), target [n2].
 
             start_pred_idx = len(seq) - 1
             if start_pred_idx < len(mask):
@@ -461,25 +396,7 @@ class MultiQueryAssociativeRecall(Dataset):
 
             mask = torch.zeros_like(y, dtype=torch.float)
 
-            # Mask the values corresponding to queries
-            # Query block: [Q, K, V]. We want to predict V given K.
-            # x indices for block i (after base):
-            # base + i*3 + 0: Q
-            # base + i*3 + 1: K -> Predict V (at y[base + i*3 + 1])
-            # base + i*3 + 2: V (not in x if last, but in y)
-
-            # x length is len(kv_seq) - 1.
-            # base is start of query part in kv_seq.
-
-            # Adjust base for x indexing (x matches kv_seq up to -1)
-            # Query part starts at 'base' index in kv_seq.
-            # So in x, it starts at 'base'.
-
             for i in range(num_queries):
-                # We want to mask the position where input is K (so we predict V)
-                # K is at index `base + i*3 + 1` in kv_seq.
-                # So input x index is `base + i*3 + 1`.
-
                 mask_idx = base + i * 3 + 1
                 if mask_idx < len(mask):
                     mask[mask_idx] = 1.0
@@ -490,18 +407,6 @@ class MultiQueryAssociativeRecall(Dataset):
     def __getitem__(self, idx): return self.data[idx]
 
 
-TASK_REGISTRY = {
-    'copy': CopyTask,
-    'reverse': ReverseTask,
-    'associative_recall': AssociativeRecallDataset,
-    'induction_head': InductionHeadTask,
-    'multi_query_ar': MultiQueryAssociativeRecall,
-    'pointer_chain': PointerChainTask,
-    'shift': ShiftTask,
-    'sort': SortTask,
-    'add': AddTask,
-    'text_generation': TextGenerationTask,
-}
 class SeriesPredictionTask(Dataset):
     """
     Synthetic time-series prediction task (e.g., sine waves).
@@ -532,4 +437,101 @@ class SeriesPredictionTask(Dataset):
     def __len__(self): return self.num_samples
     def __getitem__(self, idx): return self.data[idx]
 
-TASK_REGISTRY['series'] = SeriesPredictionTask
+
+class HuggingFaceDataset(Dataset):
+    """
+    Wrapper for Hugging Face Datasets to work with ANA.
+    Automatically handles tokenization and batching.
+    """
+    def __init__(
+        self,
+        dataset_name: str,
+        split: str = "train",
+        seq_len: int = 128,
+        tokenizer_name: str = "gpt2",
+        streaming: bool = False
+    ):
+        try:
+            from datasets import load_dataset
+            from transformers import AutoTokenizer
+        except ImportError:
+            raise ImportError("Please install 'datasets' and 'transformers' to use HuggingFaceDataset: pip install datasets transformers")
+
+        self.seq_len = seq_len
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Load dataset
+        self.dataset = load_dataset(dataset_name, split=split, streaming=streaming)
+        self.streaming = streaming
+
+        # Determine text column
+        self.text_column = "text"
+        if "content" in self.dataset.column_names:
+            self.text_column = "content"
+        elif "sentence" in self.dataset.column_names:
+            self.text_column = "sentence"
+
+        if not streaming:
+            # Tokenize all at once if not streaming
+            def tokenize_function(examples):
+                return self.tokenizer(examples[self.text_column], truncation=True, max_length=seq_len + 1, padding="max_length")
+
+            self.tokenized_dataset = self.dataset.map(tokenize_function, batched=True, remove_columns=self.dataset.column_names)
+            self.tokenized_dataset.set_format(type="torch", columns=["input_ids"])
+
+    def __len__(self):
+        if self.streaming:
+            return 10000 # Pseudo-length for streaming
+        return len(self.tokenized_dataset)
+
+    def __getitem__(self, idx):
+        if self.streaming:
+            # Streaming access is sequential or requires iterable dataset
+            # This __getitem__ implies map-style dataset.
+            # For simplicity, we assume map-style if not streaming.
+            raise NotImplementedError("Streaming mode not fully implemented for random access.")
+
+        item = self.tokenized_dataset[idx]
+        input_ids = item['input_ids']
+
+        # Prepare x and y (causal modeling)
+        # Assuming input_ids length is seq_len + 1
+        if len(input_ids) > self.seq_len:
+             x = input_ids[:self.seq_len]
+             y = input_ids[1:self.seq_len+1]
+        else:
+             # If shorter, we should have padded.
+             x = input_ids[:-1]
+             y = input_ids[1:]
+
+        mask = torch.ones_like(y, dtype=torch.float)
+        # Optional: Mask padding in loss
+        if self.tokenizer.pad_token_id is not None:
+             mask = (y != self.tokenizer.pad_token_id).float()
+             # Set ignored tokens to -100 in target as standard practice
+             y = y.clone()
+             y[y == self.tokenizer.pad_token_id] = -100
+
+        return x, y, mask
+
+    @property
+    def vocab_size(self):
+        return self.tokenizer.vocab_size
+
+
+TASK_REGISTRY = {
+    'copy': CopyTask,
+    'reverse': ReverseTask,
+    'associative_recall': AssociativeRecallDataset,
+    'induction_head': InductionHeadTask,
+    'multi_query_ar': MultiQueryAssociativeRecall,
+    'pointer_chain': PointerChainTask,
+    'shift': ShiftTask,
+    'sort': SortTask,
+    'add': AddTask,
+    'text_generation': TextGenerationTask,
+    'series': SeriesPredictionTask,
+    'huggingface': HuggingFaceDataset
+}

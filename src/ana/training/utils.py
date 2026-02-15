@@ -44,7 +44,7 @@ class Trainer:
         self.logger = logging.getLogger(__name__)
         os.makedirs(checkpoint_dir, exist_ok=True)
         
-    def train_step(self, batch_x: torch.Tensor, batch_y: torch.Tensor) -> float:
+    def train_step(self, batch_x: torch.Tensor, batch_y: torch.Tensor, mask: Optional[torch.Tensor] = None) -> float:
         """
         Perform a single training step
         """
@@ -63,7 +63,23 @@ class Trainer:
             logits = self.model(batch_x)
         
         # Compute loss
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), batch_y.view(-1))
+        if mask is not None:
+            # Mask is usually [Batch, Seq] or [Batch, Seq, 1]
+            active_pos = mask.view(-1).bool()
+            if active_pos.any():
+                logits_flat = logits.reshape(-1, logits.size(-1))
+                targets_flat = batch_y.reshape(-1)
+
+                # Filter
+                logits_active = logits_flat[active_pos]
+                targets_active = targets_flat[active_pos]
+
+                loss = F.cross_entropy(logits_active, targets_active)
+            else:
+                # No active tokens, zero loss
+                loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+        else:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), batch_y.view(-1))
         
         # Backward pass
         loss.backward()
@@ -121,10 +137,20 @@ class Trainer:
         step_count = 0
         
         progress_bar = tqdm(dataloader, desc=f"Epoch {self.current_epoch}", leave=False)
-        for batch_x, batch_y in progress_bar:
+        for batch_item in progress_bar:
+            mask = None
+            if len(batch_item) == 2:
+                batch_x, batch_y = batch_item
+            elif len(batch_item) == 3:
+                batch_x, batch_y, mask = batch_item
+            else:
+                raise ValueError(f"Unexpected batch format: {len(batch_item)} elements")
+
             batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+            if mask is not None:
+                mask = mask.to(self.device)
             
-            loss = self.train_step(batch_x, batch_y)
+            loss = self.train_step(batch_x, batch_y, mask=mask)
             losses.append(loss)
             
             if step_count % self.log_interval == 0:
