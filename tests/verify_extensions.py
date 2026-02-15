@@ -3,8 +3,6 @@ import torch
 import sys
 import os
 
-sys.path.append(os.path.join(os.getcwd(), 'src'))
-
 from ana.models.config import ANAConfig
 from ana.models.core import ANARLAgent, ANASeriesModel
 

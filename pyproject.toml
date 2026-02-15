@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ana-nlp"
-version = "1.0.0"
+version = "1.0.1"
 description = "Adaptive Neural Automaton - Advanced SSM with Associative Memory"
 authors = [{name = "ANA Research Team", email = "research@example.com"}]
 license = {text = "MIT"}
