@@ -40,9 +40,22 @@ def parallel_scan_cumsum(u, log_alpha, beta):
     return h.to(u.dtype)
 
 
-# JIT compiled scan function for efficiency (Sequential fallback)
 @torch.jit.script
-def lru_scan(u, alpha, beta, h_init):
+def lru_scan(u: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor, h_init: torch.Tensor) -> torch.Tensor:
+    """
+    JIT-compiled sequential scan for Linear Recurrent Units.
+
+    Implements the recurrence h_t = alpha_t * h_{t-1} + beta_t * u_t efficiently on GPU/CPU.
+
+    Args:
+        u: Input projection [Batch, Seq, State_Dim]
+        alpha: Gate alpha [Batch, Seq, State_Dim] or [Batch, 1, State_Dim]
+        beta: Gate beta [Batch, Seq, State_Dim] or [Batch, 1, State_Dim]
+        h_init: Initial state [Batch, State_Dim]
+
+    Returns:
+        h_seq: Hidden states sequence [Batch, Seq, State_Dim]
+    """
     h = h_init
     h_out_list = []
 
@@ -137,7 +150,8 @@ class LinearRecurrentUnit(nn.Module):
         self.static_alpha_logit = nn.Parameter(torch.Tensor(self.state_dim).uniform_(1.5, 2.5))
         self.static_beta_logit = nn.Parameter(torch.Tensor(self.state_dim).uniform_(-1.5, -0.5))
 
-    def forward(self, x, h_prev=None, dynamic_gates=None):
+    def forward(self, x: torch.Tensor, h_prev: Optional[torch.Tensor] = None,
+                dynamic_gates: Optional[Tuple[torch.Tensor, torch.Tensor]] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Step-wise forward pass.
 
@@ -177,7 +191,8 @@ class LinearRecurrentUnit(nn.Module):
 
         return y_t, h_t
 
-    def forward_sequence(self, x, dynamic_gates=None):
+    def forward_sequence(self, x: torch.Tensor,
+                         dynamic_gates: Optional[Tuple[torch.Tensor, torch.Tensor]] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Sequence-wise forward pass (Parallel Scan or Sequential Scan).
 
@@ -264,7 +279,7 @@ class HyperController(nn.Module):
         halt_logit = out[..., idx+1:idx+2]
         return track_outputs, ret_gate, halt_logit
 
-    def forward(self, x, force_prob=0.0):
+    def forward(self, x: torch.Tensor, force_prob: float = 0.0) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]], torch.Tensor, torch.Tensor]:
         features = self.net(x)
         out = self.head(features)
 
@@ -276,7 +291,7 @@ class HyperController(nn.Module):
 
         return track_outputs, g_ret, g_halt
 
-    def forward_sequence(self, x, force_prob=0.0):
+    def forward_sequence(self, x: torch.Tensor, force_prob: float = 0.0) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]], torch.Tensor, torch.Tensor]:
         features = self.net(x)
         out = self.head(features)
 
@@ -310,7 +325,7 @@ class HoloLink(nn.Module):
 
         self.binding_strength = nn.Parameter(torch.tensor(1.0))
 
-    def forward(self, x_t, h_t, M_prev):
+    def forward(self, x_t: torch.Tensor, h_t: torch.Tensor, M_prev: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = x_t.size(0)
 
         if M_prev is None:
@@ -339,7 +354,7 @@ class HoloLink(nn.Module):
         retrieved = self.norm(retrieved)
         return retrieved, M_t
 
-    def forward_sequence(self, x, h):
+    def forward_sequence(self, x: torch.Tensor, h: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         k = self.k_proj(h)
         k = torch.nn.functional.normalize(k + 1e-8, p=2, dim=-1)  # Epsilon for stability
         v = self.v_proj(h)
@@ -412,7 +427,8 @@ class ANAModel(nn.Module):
         self.norm = nn.LayerNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size)
 
-    def forward_features_parallel(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+    def forward_features_parallel(self, input_ids: Optional[torch.Tensor] = None, inputs_embeds: Optional[torch.Tensor] = None,
+                                  return_info: bool = False, force_prob: float = 0.0) -> Tuple[torch.Tensor, Dict]:
         if self.config.max_thinking_steps > 0:
             return self.forward_features_sequential(input_ids, inputs_embeds, return_info, force_prob)
 
@@ -503,10 +519,12 @@ class ANAModel(nn.Module):
         x = self.norm(x)
         return x, info_log
 
-    def forward_sequential(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+    def forward_sequential(self, input_ids: Optional[torch.Tensor] = None, inputs_embeds: Optional[torch.Tensor] = None,
+                           return_info: bool = False, force_prob: float = 0.0) -> Tuple[torch.Tensor, Dict]:
         return self.forward_features_sequential(input_ids, inputs_embeds, return_info, force_prob)
 
-    def forward_features_sequential(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+    def forward_features_sequential(self, input_ids: Optional[torch.Tensor] = None, inputs_embeds: Optional[torch.Tensor] = None,
+                                    return_info: bool = False, force_prob: float = 0.0) -> Tuple[torch.Tensor, Dict]:
         if inputs_embeds is not None:
             x = inputs_embeds
             input_shape = inputs_embeds.shape[:-1]
@@ -534,12 +552,6 @@ class ANAModel(nn.Module):
                 tracks = layer['tracks']
 
                 # Thinking Steps Loop
-                # We loop up to max_thinking_steps + 1 (the 1 is the actual processing)
-                # But actually, thinking steps implies we refine the state without consuming new input.
-                # Simplified ACT (Adaptive Computation Time):
-                # We reuse the same xt? No, we update xt.
-                # Let's say we have an internal recurrence.
-
                 steps_taken = 0
                 while steps_taken <= self.config.max_thinking_steps:
                     # 1. Controller
@@ -550,18 +562,6 @@ class ANAModel(nn.Module):
                     if self.config.use_controller:
                         ctl = layer['controller']
                         track_outputs, g_ret, g_halt = ctl(xt, force_prob=force_prob)
-
-                    # Check halt
-                    should_halt = False
-                    if self.config.max_thinking_steps > 0:
-                         if g_halt is not None:
-                             halt_prob = torch.sigmoid(g_halt)
-                             # If halt prob > 0.5, we stop thinking (batch-wise?)
-                             # For simplicity in batch training, we just run fixed steps or average?
-                             # Standard ACT is complex.
-                             # Simplified: We just run max_thinking_steps fixed for now if > 0.
-                             # Or we define it as: we run at least 1 step.
-                             pass
 
                     # 2. Update Tracks
                     track_results = []
@@ -631,12 +631,6 @@ class ANAModel(nn.Module):
                     if self.config.max_thinking_steps == 0:
                         break
 
-                    # If using halt logic, we would check here.
-                    # For this implementation, we treat max_thinking_steps as "Extra steps".
-                    # So loop runs max_thinking_steps + 1 times?
-                    # Plan said: "run multiple internal updates... until max_thinking_steps is reached"
-                    # Let's interpret max_thinking_steps as *additional* steps.
-
                     if steps_taken > self.config.max_thinking_steps:
                         break
 
@@ -674,7 +668,7 @@ class ANAModel(nn.Module):
         output_seq = self.norm(output_seq)
         return output_seq, info_log
 
-    def forward_features_step(self, inputs_embeds, state=None):
+    def forward_features_step(self, inputs_embeds: torch.Tensor, state: Optional[Tuple] = None) -> Tuple[torch.Tensor, Tuple, Dict]:
         """
         Single step forward for RL/Series generation.
         Args:
@@ -777,22 +771,25 @@ class ANAModel(nn.Module):
         x = self.norm(x)
         return x, (new_h_states, new_m_states), step_info
 
-    def forward_parallel(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+    def forward_parallel(self, input_ids: Optional[torch.Tensor] = None, inputs_embeds: Optional[torch.Tensor] = None,
+                         return_info: bool = False, force_prob: float = 0.0) -> Tuple[torch.Tensor, Dict]:
         x, info_log = self.forward_features_parallel(input_ids, inputs_embeds, return_info, force_prob)
         logits = self.output_head(x)
         return logits, info_log
 
-    def forward_sequential(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+    def forward_sequential(self, input_ids: Optional[torch.Tensor] = None, inputs_embeds: Optional[torch.Tensor] = None,
+                           return_info: bool = False, force_prob: float = 0.0) -> Tuple[torch.Tensor, Dict]:
         x, info_log = self.forward_features_sequential(input_ids, inputs_embeds, return_info, force_prob)
         logits = self.output_head(x)
         return logits, info_log
 
-    def forward_step(self, inputs_embeds, state=None):
+    def forward_step(self, inputs_embeds: torch.Tensor, state: Optional[Tuple] = None) -> Tuple[torch.Tensor, Tuple, Dict]:
         x, new_state, step_info = self.forward_features_step(inputs_embeds, state)
         logits = self.output_head(x)
         return logits, new_state, step_info
 
-    def forward(self, input_ids=None, inputs_embeds=None, return_info=False, force_prob=0.0):
+    def forward(self, input_ids: Optional[torch.Tensor] = None, inputs_embeds: Optional[torch.Tensor] = None,
+                return_info: bool = False, force_prob: float = 0.0) -> Tuple[torch.Tensor, Dict]:
         if self.config.use_parallel_scan and self.config.max_thinking_steps == 0:
              return self.forward_parallel(input_ids, inputs_embeds, return_info, force_prob)
         else:
@@ -817,7 +814,7 @@ class BaselineSSM(nn.Module):
         self.norm = nn.LayerNorm(config.d_model)
         self.output_head = nn.Linear(config.d_model, config.vocab_size)
 
-    def forward(self, input_ids, return_info=False, force_prob=0.0):
+    def forward(self, input_ids: torch.Tensor, return_info: bool = False, force_prob: float = 0.0) -> Tuple[torch.Tensor, List]:
         x = self.embedding(input_ids)
 
         for lru in self.layers:
@@ -843,7 +840,7 @@ class ANARLAgent(nn.Module):
         self.policy_head = nn.Linear(config.d_model, config.action_space)
         self.value_head = nn.Linear(config.d_model, 1)
 
-    def forward(self, obs, state=None):
+    def forward(self, obs: torch.Tensor, state: Optional[Tuple] = None) -> Tuple[torch.Tensor, torch.Tensor, Tuple, Dict]:
         """
         Single step forward for RL.
         obs: [Batch, Obs_Dim]
@@ -871,7 +868,7 @@ class ANASeriesModel(nn.Module):
         self.input_proj = nn.Linear(config.series_dim, config.d_model)
         self.output_proj = nn.Linear(config.d_model, config.series_dim)
 
-    def forward(self, x, state=None):
+    def forward(self, x: torch.Tensor, state: Optional[Tuple] = None) -> Tuple[torch.Tensor, Tuple, Dict]:
         """
         Single step forward for series prediction.
         x: [Batch, Series_Dim]
@@ -882,7 +879,7 @@ class ANASeriesModel(nn.Module):
 
         return pred, next_state, step_info
 
-    def forward_sequence(self, x_seq):
+    def forward_sequence(self, x_seq: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         """
         Process a sequence for training.
         x_seq: [Batch, Seq, Series_Dim]
