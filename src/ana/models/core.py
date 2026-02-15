@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List, Union
 from .config import ANAConfig
 
 
@@ -110,8 +110,12 @@ def parallel_scan_log(u, alpha, beta, h_init):
 class LinearRecurrentUnit(nn.Module):
     """
     A simplified Linear Recurrent Unit (LRU) / SSM layer.
-    h_t = alpha * h_{t-1} + beta * x_t
-    y_t = h_t
+
+    Implements the recurrence:
+    h_t = alpha * h_{t-1} + beta * u_t
+    y_t = W_out * h_t
+
+    where u_t is the projected input. Alpha and beta can be static or dynamically gated.
     """
     def __init__(self, config: ANAConfig):
         super().__init__()
@@ -134,6 +138,18 @@ class LinearRecurrentUnit(nn.Module):
         self.static_beta_logit = nn.Parameter(torch.Tensor(self.state_dim).uniform_(-1.5, -0.5))
 
     def forward(self, x, h_prev=None, dynamic_gates=None):
+        """
+        Step-wise forward pass.
+
+        Args:
+            x: Input tensor [Batch, D_Model]
+            h_prev: Previous hidden state [Batch, State_Dim]
+            dynamic_gates: Tuple(alpha_gate, beta_gate) from HyperController
+
+        Returns:
+            y_t: Output tensor [Batch, D_Model]
+            h_t: New hidden state [Batch, State_Dim]
+        """
         batch_size = x.size(0)
 
         if h_prev is None:
@@ -162,6 +178,17 @@ class LinearRecurrentUnit(nn.Module):
         return y_t, h_t
 
     def forward_sequence(self, x, dynamic_gates=None):
+        """
+        Sequence-wise forward pass (Parallel Scan or Sequential Scan).
+
+        Args:
+            x: Input sequence [Batch, Seq, D_Model]
+            dynamic_gates: Tuple(alpha_gate, beta_gate) [Batch, Seq, State_Dim]
+
+        Returns:
+            y_seq: Output sequence [Batch, Seq, D_Model]
+            h_seq: Hidden states sequence [Batch, Seq, State_Dim]
+        """
         batch_size, seq_len, _ = x.shape
         u = self.input_proj(x)
 
@@ -191,8 +218,12 @@ class LinearRecurrentUnit(nn.Module):
 class HyperController(nn.Module):
     """
     HyperController for Multi-Track ANA + HoloLink.
-    Outputs per track: alpha_gate, beta_gate, mix_logit
-    Plus: retrieval_gate, halt_logit
+
+    Generates dynamic gating signals for:
+    - Each LRU track (alpha, beta modulation)
+    - Track mixing weights
+    - Memory retrieval gate
+    - Thinking process halt gate
     """
     def __init__(self, config: ANAConfig, hidden_dim=None):
         super().__init__()
@@ -261,7 +292,9 @@ class HyperController(nn.Module):
 class HoloLink(nn.Module):
     """
     Associative Memory Module using Matrix Accumulation / Linear Attention.
+
     Includes learned binding strength.
+    Stores key-value pairs in a matrix M, retrieves using query q.
     """
     def __init__(self, config: ANAConfig, input_dim: int):
         super().__init__()
@@ -332,7 +365,13 @@ class HoloLink(nn.Module):
 
 class ANAModel(nn.Module):
     """
-    Phase 2: Multi-Track ANA + HoloLink
+    Phase 2: Multi-Track ANA + HoloLink.
+
+    The core Adaptive Neural Automaton model. It combines:
+    - Multiple Linear Recurrent Unit (LRU) tracks for parallel state processing.
+    - A HyperController for dynamic gating and mixing of tracks.
+    - HoloLink associative memory for long-term recall.
+    - Support for Adaptive Computation Time (thinking steps).
     """
     def __init__(self, config: ANAConfig):
         super().__init__()
@@ -643,110 +682,6 @@ class ANAModel(nn.Module):
             state: Tuple (h_states, m_states)
                 h_states: List[List[Tensor]] - [Layer][Track] -> [Batch, State_Dim]
                 m_states: List[Tensor] - [Layer] -> [Batch, Key_Dim, Val_Dim]
-        """
-        x = inputs_embeds
-        batch_size = x.size(0)
-
-        if state is None:
-            h_states = [[None] * self.config.track_count for _ in range(self.config.num_layers)]
-            m_states = [None] * self.config.num_layers
-        else:
-            h_states, m_states = state
-
-        new_h_states = []
-        new_m_states = []
-
-        for i, layer in enumerate(self.layers):
-            tracks = layer['tracks']
-
-            # 1. Controller
-            track_outputs = None
-            g_ret = None
-
-            if self.config.use_controller:
-                ctl = layer['controller']
-                track_outputs, g_ret, _ = ctl(x)
-
-            # 2. Tracks
-            track_results = []
-            track_mix_logits = []
-            layer_h_states = []
-
-            for t_idx, track in enumerate(tracks):
-                gates = None
-                mix = None
-                if track_outputs is not None:
-                    g_alpha, g_beta, g_mix = track_outputs[t_idx]
-                    gates = (g_alpha, g_beta)
-                    mix = g_mix
-
-                # State handling
-                h_prev = h_states[i][t_idx] if h_states[i][t_idx] is not None else None
-                yt, ht = track(x, h_prev, dynamic_gates=gates)
-
-                layer_h_states.append(ht)
-                track_results.append(yt)
-
-                if mix is not None:
-                    track_mix_logits.append(mix)
-                else:
-                    track_mix_logits.append(torch.zeros(batch_size, 1, device=x.device))
-
-            new_h_states.append(layer_h_states)
-
-            # Mixing
-            stacked_results = torch.stack(track_results, dim=1)
-            stacked_mix = torch.stack(track_mix_logits, dim=1)
-            mix_weights = torch.softmax(stacked_mix, dim=1)
-            layer_out = (stacked_results * mix_weights).sum(dim=1)
-
-            # 3. HoloLink
-            qt = 0
-            m_next = None
-            if self.config.use_hololink:
-                holo = layer['holo']
-                ht_combined = torch.cat(layer_h_states, dim=-1)
-                m_prev = m_states[i]
-                qt, m_next = holo(x, ht_combined, m_prev)
-
-            new_m_states.append(m_next)
-
-            # 4. Merge
-            if self.config.use_controller and self.config.use_hololink:
-                ret_gate = torch.sigmoid(g_ret)
-                layer_out = layer_out + ret_gate * qt
-            elif self.config.use_hololink:
-                layer_out = layer_out + qt
-
-            x = x + layer_out # Residual
-
-        x = self.norm(x)
-
-        # Build step info
-        step_info = {'layers': []}
-        # Step info is a bit different from info_log since it's single step
-        # Let's align structure: layers[i]['mix_weights'] -> Tensor [Batch, Tracks]
-        # layers[i]['ret_gate'] -> Tensor [Batch, 1]
-
-        # We need to capture the mixing/gating variables from inside the loop
-        # We didn't store them in a list during iteration, so we can't build step_info.
-        # Let's fix loop to store them.
-
-        # Wait, I need to modify the loop above first to capture these variables.
-        # But wait, step_info is constructed *after* the loop?
-        # The loop iterates layers. So step_info needs to be populated *inside* the loop.
-
-        # Let's rewrite the method completely to include info collection.
-        return x, (new_h_states, new_m_states)
-
-    def forward_features_step(self, inputs_embeds, state=None):
-        """
-        Single step forward for RL/Series generation.
-        Args:
-            inputs_embeds: [Batch, D_Model] (No time dim)
-            state: Tuple (h_states, m_states)
-                h_states: List[List[Tensor]] - [Layer][Track] -> [Batch, State_Dim]
-                m_states: List[Tensor] - [Layer] -> [Batch, Key_Dim, Val_Dim]
         Returns:
             features: [Batch, D_Model]
             next_state: Tuple
@@ -895,6 +830,9 @@ class BaselineSSM(nn.Module):
 class ANARLAgent(nn.Module):
     """
     Phase 4: RL Agent wrapping ANA.
+
+    Wraps the core ANA model for Reinforcement Learning tasks.
+    Maps observations -> ANA features -> Policy/Value outputs.
     """
     def __init__(self, config: ANAConfig):
         super().__init__()
@@ -921,6 +859,9 @@ class ANARLAgent(nn.Module):
 class ANASeriesModel(nn.Module):
     """
     Phase 5: Time Series Model wrapping ANA.
+
+    Wraps the core ANA model for continuous time series forecasting or audio generation.
+    Maps input series values -> ANA features -> predicted next values.
     """
     def __init__(self, config: ANAConfig):
         super().__init__()

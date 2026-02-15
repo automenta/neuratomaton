@@ -106,6 +106,40 @@ Properties:
 
 **Total complexity: O(N) - Linear in sequence length**
 
+## Advanced Usage
+
+ANA is designed to be a general-purpose sequence model, not just for text.
+
+### Reinforcement Learning (RL)
+
+The `ANARLAgent` wrapper adapts the core model for decision-making tasks.
+
+```python
+from ana import ANARLAgent
+
+# Config for 4 discrete actions, 10 continuous observation features
+config = ANAConfig(action_space=4, observation_space=10, d_model=64)
+agent = ANARLAgent(config)
+
+obs = torch.randn(1, 10) # [Batch, Obs]
+logits, value, next_state, info = agent(obs)
+```
+
+### Time Series & Audio
+
+The `ANASeriesModel` handles continuous input/output streams.
+
+```python
+from ana import ANASeriesModel
+
+# Config for univariate time series
+config = ANAConfig(series_dim=1, d_model=64)
+model = ANASeriesModel(config)
+
+x = torch.randn(1, 100, 1) # [Batch, Seq, Dim]
+pred, _ = model.forward_sequence(x)
+```
+
 ## Experiments & Benchmarks
 
 ### Automated Research Pipeline
