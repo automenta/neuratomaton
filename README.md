@@ -30,13 +30,15 @@ ANA (Adaptive Neural Automaton) is an advanced State Space Model architecture fe
 pip install -e .
 ```
 
-Or for development:
+Or for development (including test dependencies):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
 ## Quick Start
+
+### Python API
 
 ```python
 import torch
@@ -61,6 +63,23 @@ model = ANAModel(config)
 input_ids = torch.randint(0, config.vocab_size, (2, 128))
 logits, _ = model(input_ids)
 ```
+
+### CLI Usage
+
+The package provides a turnkey CLI `ana-research` to run experiments and verify the architecture.
+
+```bash
+# Verify installation with a quick smoketest
+ana-research --quick --discovery
+
+# Run full Phase 3 (Discovery) experiments
+ana-research --discovery
+
+# Run all phases (Validation, Potential, Discovery, Action, Series)
+ana-research --all
+```
+
+Run `ana-research --help` for all available options.
 
 ## Architecture
 
@@ -87,19 +106,26 @@ Properties:
 
 **Total complexity: O(N) - Linear in sequence length**
 
-## Experiments
+## Experiments & Benchmarks
 
-### Reproduce Results
+### Automated Research Pipeline
+
+The `ana-research` tool automates the entire research pipeline, from validation to scientific discovery.
 
 ```bash
-# Run comprehensive experiments
-python -m ana.experiments.comprehensive
+ana-research --study_name my_study --discovery
+```
 
-# Run associative recall benchmark
-python -m ana.experiments.associative_recall
+### Standalone Benchmarks
 
-# Run parameter efficiency study
-python -m ana.experiments.parameter_efficiency
+For specific technical benchmarks (scaling, ablation, throughput), you can use the comprehensive benchmark suite:
+
+```bash
+# Run comprehensive benchmarks (Scaling, Ablation, Throughput)
+python -m ana.experiments.run_comprehensive
+
+# Run specific experiments using the main CLI
+ana-research --potential
 ```
 
 ### Two-Phase Training
