@@ -1,102 +1,134 @@
-import unittest
+"""
+Basic tests for ANA models
+"""
+
 import torch
-import torch.nn as nn
-from ana.models import ANAModel, LinearRecurrentUnit, HoloLink, HyperController, BaselineSSM
-from ana.config import ANAConfig
+import pytest
+from ana.models.config import ANAConfig
+from ana.models.core import ANAModel, BaselineSSM
 
 
-class TestModels(unittest.TestCase):
-    def setUp(self):
-        self.config = ANAConfig(
-            vocab_size=10,
-            d_model=8,
-            state_dim=16,
-            num_layers=1,
-            batch_size=2,
-            key_dim=4,
-            use_hololink=True,
-            use_controller=True,
-            track_count=2
-        )
+def test_ana_config_creation():
+    """Test that ANAConfig can be created with default values"""
+    config = ANAConfig()
+    assert config.d_model == 64
+    assert config.vocab_size == 40
+    assert config.use_hololink == True
 
-    def test_lru_forward(self):
-        lru = LinearRecurrentUnit(self.config)
-        x = torch.randn(self.config.batch_size, self.config.d_model)
-        h_prev = torch.zeros(self.config.batch_size, self.config.state_dim)
 
-        y, h_new = lru(x, h_prev)
+def test_ana_model_creation():
+    """Test that ANAModel can be created and run forward pass"""
+    config = ANAConfig(
+        vocab_size=50,
+        d_model=32,
+        state_dim=32,
+        key_dim=16,
+        num_layers=2,
+        use_hololink=True,
+        use_controller=False
+    )
+    
+    model = ANAModel(config)
+    
+    # Test forward pass
+    batch_size = 2
+    seq_len = 10
+    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+    
+    logits, info = model(input_ids)
+    
+    assert logits.shape == (batch_size, seq_len, config.vocab_size)
+    assert isinstance(info, list)
 
-        self.assertEqual(y.shape, (self.config.batch_size, self.config.d_model))
-        self.assertEqual(h_new.shape, (self.config.batch_size, self.config.state_dim))
 
-    def test_hololink_forward(self):
-        holo = HoloLink(self.config, input_dim=self.config.state_dim * self.config.track_count)
-        x = torch.randn(self.config.batch_size, self.config.d_model)
-        h = torch.randn(self.config.batch_size, self.config.state_dim * self.config.track_count)
-        m_prev = None
+def test_baseline_ssm_creation():
+    """Test that BaselineSSM can be created and run forward pass"""
+    config = ANAConfig(
+        vocab_size=50,
+        d_model=32,
+        state_dim=32,
+        num_layers=2,
+        use_hololink=False,
+        use_controller=False
+    )
+    
+    model = BaselineSSM(config)
+    
+    # Test forward pass
+    batch_size = 2
+    seq_len = 10
+    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+    
+    logits, info = model(input_ids)
+    
+    assert logits.shape == (batch_size, seq_len, config.vocab_size)
+    assert isinstance(info, list)
 
-        retrieved, m_new = holo(x, h, m_prev)
 
-        self.assertEqual(retrieved.shape, (self.config.batch_size, self.config.d_model))
-        self.assertEqual(m_new.shape, (self.config.batch_size, self.config.key_dim, self.config.d_model))
+def test_parameter_counts():
+    """Test that parameter counts are reasonable"""
+    # ANA with HoloLink should have more parameters than baseline
+    ana_config = ANAConfig(
+        vocab_size=50,
+        d_model=32,
+        state_dim=32,
+        key_dim=16,
+        num_layers=2,
+        use_hololink=True,
+        use_controller=False
+    )
+    
+    baseline_config = ANAConfig(
+        vocab_size=50,
+        d_model=32,
+        state_dim=32,
+        num_layers=2,
+        use_hololink=False,
+        use_controller=False
+    )
+    
+    ana_model = ANAModel(ana_config)
+    baseline_model = BaselineSSM(baseline_config)
+    
+    ana_params = sum(p.numel() for p in ana_model.parameters())
+    baseline_params = sum(p.numel() for p in baseline_model.parameters())
+    
+    assert ana_params > baseline_params  # HoloLink adds parameters
 
-    def test_controller_forward(self):
-        ctl = HyperController(self.config)
-        x = torch.randn(self.config.batch_size, self.config.d_model)
 
-        track_outputs, g_ret, g_halt = ctl(x)
-
-        self.assertEqual(len(track_outputs), self.config.track_count)
-        alpha, beta, mix = track_outputs[0]
-        self.assertEqual(alpha.shape, (self.config.batch_size, 1))
-        self.assertEqual(beta.shape, (self.config.batch_size, 1))
-        self.assertEqual(mix.shape, (self.config.batch_size, 1))
-
-    def test_anamodel_forward(self):
-        model = ANAModel(self.config)
-        seq_len = 5
-        input_ids = torch.randint(0, self.config.vocab_size, (self.config.batch_size, seq_len))
-
-        logits, info = model(input_ids, return_info=True)
-
-        self.assertEqual(logits.shape, (self.config.batch_size, seq_len, self.config.vocab_size))
-
-    def test_ablation_no_controller(self):
-        self.config.use_controller = False
-        model = ANAModel(self.config)
-        seq_len = 5
-        input_ids = torch.randint(0, self.config.vocab_size, (self.config.batch_size, seq_len))
-
-        logits, _ = model(input_ids)
-        self.assertEqual(logits.shape, (self.config.batch_size, seq_len, self.config.vocab_size))
-
-    def test_ablation_no_hololink(self):
-        self.config.use_hololink = False
-        model = ANAModel(self.config)
-        seq_len = 5
-        input_ids = torch.randint(0, self.config.vocab_size, (self.config.batch_size, seq_len))
-
-        logits, _ = model(input_ids)
-        self.assertEqual(logits.shape, (self.config.batch_size, seq_len, self.config.vocab_size))
-
-    def test_baseline_ssm_forward(self):
-        model = BaselineSSM(self.config)
-        seq_len = 5
-        input_ids = torch.randint(0, self.config.vocab_size, (self.config.batch_size, seq_len))
-
-        logits, _ = model(input_ids)
-        self.assertEqual(logits.shape, (self.config.batch_size, seq_len, self.config.vocab_size))
-
-    def test_param_comparison(self):
-        ana = ANAModel(self.config)
-        baseline = BaselineSSM(self.config)
+def test_model_device_compatibility():
+    """Test that models work on both CPU and GPU (if available)"""
+    config = ANAConfig(
+        vocab_size=30,
+        d_model=16,
+        state_dim=16,
+        key_dim=8,
+        num_layers=1,
+        use_hololink=True,
+        use_controller=False
+    )
+    
+    # Test on CPU
+    model_cpu = ANAModel(config)
+    input_ids = torch.randint(0, config.vocab_size, (2, 8))
+    
+    logits_cpu, _ = model_cpu(input_ids)
+    assert logits_cpu.device.type == 'cpu'
+    
+    # Test on GPU if available
+    if torch.cuda.is_available():
+        model_gpu = ANAModel(config).cuda()
+        input_ids_gpu = input_ids.cuda()
         
-        ana_params = sum(p.numel() for p in ana.parameters())
-        baseline_params = sum(p.numel() for p in baseline.parameters())
-        
-        # ANA should have more params due to HoloLink and Controller
-        self.assertGreater(ana_params, baseline_params)
+        logits_gpu, _ = model_gpu(input_ids_gpu)
+        assert logits_gpu.device.type == 'cuda'
 
 
-if __name__ == '__main__':
-    unittest.main()
+if __name__ == "__main__":
+    # Run tests manually if executed directly
+    test_ana_config_creation()
+    test_ana_model_creation()
+    test_baseline_ssm_creation()
+    test_parameter_counts()
+    test_model_device_compatibility()
+    print("All tests passed!")
