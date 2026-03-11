@@ -30,13 +30,15 @@ ANA (Adaptive Neural Automaton) is an advanced State Space Model architecture fe
 pip install -e .
 ```
 
-Or for development:
+Or for development (including test dependencies):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
 ## Quick Start
+
+### Python API
 
 ```python
 import torch
@@ -61,6 +63,23 @@ model = ANAModel(config)
 input_ids = torch.randint(0, config.vocab_size, (2, 128))
 logits, _ = model(input_ids)
 ```
+
+### CLI Usage
+
+The package provides a turnkey CLI `ana-research` to run experiments and verify the architecture.
+
+```bash
+# Verify installation with a quick smoketest
+ana-research --quick --discovery
+
+# Run full Phase 3 (Discovery) experiments
+ana-research --discovery
+
+# Run all phases (Validation, Potential, Discovery, Action, Series)
+ana-research --all
+```
+
+Run `ana-research --help` for all available options.
 
 ## Architecture
 
@@ -87,19 +106,60 @@ Properties:
 
 **Total complexity: O(N) - Linear in sequence length**
 
-## Experiments
+## Advanced Usage
 
-### Reproduce Results
+ANA is designed to be a general-purpose sequence model, not just for text.
+
+### Reinforcement Learning (RL)
+
+The `ANARLAgent` wrapper adapts the core model for decision-making tasks.
+
+```python
+from ana import ANARLAgent
+
+# Config for 4 discrete actions, 10 continuous observation features
+config = ANAConfig(action_space=4, observation_space=10, d_model=64)
+agent = ANARLAgent(config)
+
+obs = torch.randn(1, 10) # [Batch, Obs]
+logits, value, next_state, info = agent(obs)
+```
+
+### Time Series & Audio
+
+The `ANASeriesModel` handles continuous input/output streams.
+
+```python
+from ana import ANASeriesModel
+
+# Config for univariate time series
+config = ANAConfig(series_dim=1, d_model=64)
+model = ANASeriesModel(config)
+
+x = torch.randn(1, 100, 1) # [Batch, Seq, Dim]
+pred, _ = model.forward_sequence(x)
+```
+
+## Experiments & Benchmarks
+
+### Automated Research Pipeline
+
+The `ana-research` tool automates the entire research pipeline, from validation to scientific discovery.
 
 ```bash
-# Run comprehensive experiments
-python -m ana.experiments.comprehensive
+ana-research --study_name my_study --discovery
+```
 
-# Run associative recall benchmark
-python -m ana.experiments.associative_recall
+### Standalone Benchmarks
 
-# Run parameter efficiency study
-python -m ana.experiments.parameter_efficiency
+For specific technical benchmarks (scaling, ablation, throughput), you can use the comprehensive benchmark suite:
+
+```bash
+# Run comprehensive benchmarks (Scaling, Ablation, Throughput)
+python -m ana.experiments.run_comprehensive
+
+# Run specific experiments using the main CLI
+ana-research --potential
 ```
 
 ### Two-Phase Training

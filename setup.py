@@ -13,6 +13,11 @@ setup(
         "matplotlib>=3.7.0",
         "tensorboard>=2.13.0",
         "pytest>=7.0.0",
+        "tqdm>=4.64.0",
+        "seaborn>=0.12.0",
+        "scikit-learn>=1.0.0",
+        "umap-learn>=0.5.0",
+        "optuna>=3.0.0",
     ],
     extras_require={
         "dev": [
@@ -29,4 +34,9 @@ setup(
         ]
     },
     python_requires=">=3.8",
+    entry_points={
+        "console_scripts": [
+            "ana-research=ana.cli:main",
+        ],
+    },
 )
