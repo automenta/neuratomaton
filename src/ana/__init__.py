@@ -5,7 +5,7 @@ Multi-track State Space Model with Holographic Binding
 """
 
 from .models.config import ANAConfig
-from .models.core import ANAModel, LinearRecurrentUnit, HoloLink, HyperController, BaselineSSM
+from .models.core import ANAModel, LinearRecurrentUnit, HoloLink, HyperController, BaselineSSM, ANARLAgent, ANASeriesModel
 
 __all__ = [
     'ANAConfig',
@@ -14,4 +14,6 @@ __all__ = [
     'HoloLink',
     'HyperController',
     'BaselineSSM',
+    'ANARLAgent',
+    'ANASeriesModel',
 ]

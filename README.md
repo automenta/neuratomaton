@@ -81,6 +81,13 @@ ana-research --all
 
 Run `ana-research --help` for all available options.
 
+### Usage Examples
+
+For ready-to-run scripts, check the `examples/` directory:
+
+- **Text Generation**: `python examples/text_generation.py` - Simulates basic text generation.
+- **Reinforcement Learning**: `python examples/rl_agent.py` - Simulates an RL agent step.
+
 ## Architecture
 
 ### HoloLink Associative Memory

@@ -2,8 +2,8 @@ import pytest
 import os
 import shutil
 import torch
-from src.ana.utils.datasets import InductionHeadTask, MultiQueryAssociativeRecall, PointerChainTask
-from src.ana.experiments.potential_reveal import PotentialRevealer
+from ana.utils.datasets import InductionHeadTask, MultiQueryAssociativeRecall, PointerChainTask
+from ana.experiments.potential_reveal import PotentialRevealer
 
 def test_induction_head_task():
     task = InductionHeadTask(num_samples=10, seq_len=32)
