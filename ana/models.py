@@ -462,15 +462,13 @@ class ANAModel(nn.Module):
             for i, layer in enumerate(self.layers):
                 tracks = layer['tracks']
                 
-                # Thinking Steps Loop
-                # We loop up to max_thinking_steps + 1 (the 1 is the actual processing)
-                # But actually, thinking steps implies we refine the state without consuming new input.
-                # Simplified ACT (Adaptive Computation Time):
-                # We reuse the same xt? No, we update xt.
-                # Let's say we have an internal recurrence.
-                
+                # Dynamic Thinking Steps (Adaptive Computation)
                 steps_taken = 0
-                while steps_taken <= self.config.max_thinking_steps:
+                halting_mask = torch.zeros(batch, 1, device=x.device) # 0 = active, 1 = halted
+                step_counts = torch.zeros(batch, device=x.device)
+
+                # Loop runs at least once, and up to max_thinking_steps + 1
+                while True:
                     # 1. Controller
                     track_outputs = None
                     g_ret = None
@@ -480,26 +478,23 @@ class ANAModel(nn.Module):
                         ctl = layer['controller']
                         track_outputs, g_ret, g_halt = ctl(xt, force_prob=force_prob)
 
-                    # Check halt
-                    should_halt = False
-                    if self.config.max_thinking_steps > 0:
-                         if g_halt is not None:
-                             halt_prob = torch.sigmoid(g_halt)
-                             # If halt prob > 0.5, we stop thinking (batch-wise?)
-                             # For simplicity in batch training, we just run fixed steps or average?
-                             # Standard ACT is complex.
-                             # Simplified: We just run max_thinking_steps fixed for now if > 0.
-                             # Or we define it as: we run at least 1 step.
-                             pass
+                    # Check halt (Dynamic Halting)
+                    should_halt = torch.zeros_like(halting_mask)
+                    if self.config.max_thinking_steps > 0 and g_halt is not None:
+                         halt_prob = torch.sigmoid(g_halt)
+                         should_halt = (halt_prob > 0.5).float()
+
+                    # Note: We update halting_mask at the END of the loop to ensure
+                    # that if step K decides to halt, step K is still executed,
+                    # but step K+1 is skipped (or masked out).
+
+                    # If all previously halted, break
+                    if self.config.max_thinking_steps > 0 and halting_mask.all():
+                        break
 
                     # 2. Update Tracks
                     track_results = []
                     track_mix_logits = []
-
-                    # Temporary state update for thinking?
-                    # If we "think", do we update the permanent state h_t?
-                    # Usually ACT updates the hidden state in place.
-
                     new_h_states_layer = []
 
                     for t_idx, track in enumerate(tracks):
@@ -513,6 +508,56 @@ class ANAModel(nn.Module):
                         # Use current h_state
                         h_prev = h_states[i][t_idx]
                         yt, ht = track(xt, h_prev, dynamic_gates=gates)
+
+                        # Apply Halting Mask to State Update
+                        # If halted, keep old state. Else use new state.
+                        if h_prev is None: # First step, prev is zeros implicitly in track, but h_prev var is None
+                             # track() handles None by treating it as zeros.
+                             # But if we halt on step 0 (which we shouldn't unless we want to skip processing?),
+                             # we must handle it. Usually we run at least 1 step.
+                             # Let's assume step 0 always runs effectively?
+                             # Or rather: we compute new state, and if halted, we don't update.
+                             # But on step 0, "old state" for this token is effectively "previous token's state" which is passed in h_states.
+                             # If h_prev is None, it means start of sequence.
+                             pass
+
+                        if h_prev is not None:
+                             ht = h_prev * halting_mask + ht * (1 - halting_mask)
+                        else:
+                             # If h_prev is None, it means 0.
+                             # If we halt, we should keep it 0?
+                             # Actually, if we halt, we shouldn't have updated.
+                             # But loop runs at least once.
+                             pass
+
+                        # Wait, h_states[i][t_idx] stores the state from PREVIOUS token (t-1).
+                        # We are updating it for THIS token (t).
+                        # If we halt at step k, we want the state to be the result of step k.
+                        # Wait, halting means "stop thinking".
+                        # If we decide to halt at start of step k, do we execute step k?
+                        # Usually: Read halt prob. If halt, output current state and stop.
+                        # If not halt, compute next state.
+                        # Here we compute everything then mask.
+                        # If halted (mask=1), we want to KEEP the value from END of step k-1.
+                        # But h_prev IS the value from end of step k-1 (or start of loop).
+
+                        # So:
+                        if h_prev is None:
+                             # First iteration ever for this layer/track?
+                             # No, h_states is initialized to None.
+                             # For t=0, h_prev is None.
+                             # ht computed is h_0.
+                             # If halted, we should keep... what?
+                             # We can't halt before producing ANY output for the token.
+                             # So step 0 should probably always happen?
+                             # Or if halt_mask is 1, it means we halted PREVIOUSLY.
+                             # But mask is init to 0.
+                             # So step 0 always updates.
+                             pass
+
+                        # If we have run > 0 steps, halting_mask might be 1.
+                        if steps_taken > 0 and h_prev is not None:
+                             ht = h_prev * halting_mask + ht * (1 - halting_mask)
 
                         new_h_states_layer.append(ht)
                         track_results.append(yt)
@@ -532,16 +577,17 @@ class ANAModel(nn.Module):
 
                     layer_out = (stacked_results * mix_weights).sum(dim=1)
 
-                    # 3. HoloLink (Only update memory once? Or every micro-step?)
-                    # If we update memory every micro-step, we write multiple times per token.
-                    # Maybe only read?
-                    # Let's say we update everything.
-
+                    # 3. HoloLink
                     qt = 0
                     if self.config.use_hololink:
                         holo = layer['holo']
                         ht_combined = torch.cat(h_states[i], dim=-1)
                         qt, mt_next = holo(xt, ht_combined, m_states[i])
+
+                        # Update memory state if not halted
+                        if m_states[i] is not None:
+                             mt_next = m_states[i] * halting_mask.unsqueeze(-1) + mt_next * (1 - halting_mask.unsqueeze(-1))
+
                         m_states[i] = mt_next
 
                     # 4. Merge
@@ -552,19 +598,21 @@ class ANAModel(nn.Module):
                         layer_out = layer_out + qt
 
                     # Residual update of xt for next layer OR next thinking step
-                    xt = xt + layer_out
+                    # If halted, xt should not change
+                    update = layer_out
+                    xt_next = xt + update
+                    xt = xt * halting_mask + xt_next * (1 - halting_mask)
 
+                    step_counts += (1 - halting_mask).squeeze()
                     steps_taken += 1
+
+                    # Update halting mask for NEXT iteration
+                    if self.config.max_thinking_steps > 0:
+                        halting_mask = torch.max(halting_mask, should_halt)
 
                     # Logic to break loop
                     if self.config.max_thinking_steps == 0:
                         break
-
-                    # If using halt logic, we would check here.
-                    # For this implementation, we treat max_thinking_steps as "Extra steps".
-                    # So loop runs max_thinking_steps + 1 times?
-                    # Plan said: "run multiple internal updates... until max_thinking_steps is reached"
-                    # Let's interpret max_thinking_steps as *additional* steps.
 
                     if steps_taken > self.config.max_thinking_steps:
                         break
@@ -575,6 +623,9 @@ class ANAModel(nn.Module):
                        stats['ga_0'] = track_outputs[0][0].mean().item()
                    if g_ret is not None:
                        stats['ret_gate'] = torch.sigmoid(g_ret).mean().item()
+                   if g_halt is not None:
+                       stats['halt_prob'] = torch.sigmoid(g_halt).mean().item()
+                   stats['avg_steps'] = step_counts.mean().item()
                    info_log.append(stats)
 
             final_layer_outputs.append(xt)
