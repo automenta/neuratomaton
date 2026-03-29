@@ -27,3 +27,16 @@ class ANAConfig:
     use_parallel_scan: bool = False
     force_prob: float = 0.0 # For curriculum learning
     max_thinking_steps: int = 0
+
+    # Vision (Phase 3)
+    image_size: int = 224
+    patch_size: int = 16
+    vision_encoder: str = "vit" # Defaulting to ViT-style patch embedding
+
+    # RL (Phase 4)
+    action_space: int = 4
+    observation_space: int = 10
+
+    # Audio/Scientific (Phase 5)
+    audio_sample_rate: int = 16000
+    series_dim: int = 1 # Number of features per time step (e.g., 1 for audio, N for multi-variate)
