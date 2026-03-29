@@ -125,6 +125,126 @@ class CopyTask(Dataset):
     def __getitem__(self, idx): return self.data[idx]
 
 
+class PointerChainTask(Dataset):
+    """
+    Pointer Chain Execution: Given pairs (A->B, B->C, ...), predict the end of the chain starting from a Query.
+    Input: [A] [B] [B] [C] [C] [D] ... [Q] [A]
+    Target: ... [B] [C] [D] (Sequential prediction of the path)
+
+    Or simpler: Just predict the final node after K hops?
+    For sequence modeling, it's better to predict the full path or just the next token.
+    Here we define it as: Given random pairs, and a query, predict the next K tokens in the chain.
+    """
+    def __init__(self, num_samples=1000, vocab_size=40, chain_len=3, noise_pairs=0):
+        self.data = []
+        TOK_KEY, TOK_VAL, TOK_QUERY = 1, 2, 3
+        content_range = list(range(4, vocab_size))
+
+        for _ in range(num_samples):
+            # Generate a chain: n1 -> n2 -> n3 -> ... -> nk
+            nodes = np.random.choice(content_range, size=chain_len + 1, replace=False)
+
+            pairs = []
+            for i in range(chain_len):
+                pairs.append((nodes[i], nodes[i+1]))
+
+            # Shuffle pairs in input
+            random.shuffle(pairs)
+
+            # Construct input sequence: [K1 V1 K2 V2 ...]
+            seq = []
+            for k, v in pairs:
+                seq.extend([TOK_KEY, k, TOK_VAL, v])
+
+            # Add noise pairs
+            if noise_pairs > 0:
+                noise_nodes = np.random.choice(content_range, size=noise_pairs*2, replace=True)
+                for i in range(noise_pairs):
+                    seq.extend([TOK_KEY, noise_nodes[2*i], TOK_VAL, noise_nodes[2*i+1]])
+
+            # Query: Start of the chain
+            start_node = nodes[0]
+            seq.extend([TOK_QUERY, start_node])
+
+            # Target sequence: The rest of the chain [n2, n3, ..., nk]
+            # But we need to align x and y.
+            # x: ... [Q] [n1] -> Predict [n2]
+            # Then feed [n2] -> Predict [n3]?
+            # Standard AR setup:
+            # Input: ... [Q] [n1] [n2] ... [nk-1]
+            # Target: ...      [n2] [n3] ... [nk]
+
+            chain_rest = nodes[1:].tolist()
+
+            # Full sequence for training
+            # We provide the chain tokens in input so model learns to follow?
+            # Or we only provide [Q] [n1] and expect it to output [n2] ... [nk] purely from memory?
+            # "Pure Pointer Execution" means retrieving from memory.
+
+            # If we just put [Q] [n1], and target is [n2], that's 1 hop.
+            # To do multi-hop generation, we feed the predicted token back.
+            # For training, we use teacher forcing:
+            # Input: ... [Q] [n1] [n2] ... [nk-1]
+            # Target: ...     [n2] [n3] ... [nk]
+
+            suffix_input = chain_rest[:-1] # [n2, ..., nk-1]
+            suffix_target = chain_rest     # [n2, ..., nk]
+
+            # Input x includes the prompt and the chain steps (except last)
+            # prompt: [Q] [n1]
+
+            full_input = seq + suffix_input
+            full_target = seq[1:] + [TOK_QUERY, start_node] + suffix_target
+            # Wait, y must be shifted x.
+            # x: [Seq] [Q] [n1] [n2] ... [nk-1]
+            # y:       [Q] [n1] [n2] ... [nk]
+            # The part [Seq] [Q] [n1] is context.
+            # We want to predict [n2] given [n1] and Context.
+
+            x_seq = seq + suffix_input
+            y_seq = seq[1:] + [suffix_target[0]] # Aligning is tricky with lists
+            # Let's rebuild carefully.
+
+            # Context: [K V ... K V]
+            # Prompt: [Q] [n1]
+            # Completion: [n2] [n3] ... [nk]
+
+            # Full X: Context + [Q] + [n1] + [n2] ... + [nk-1]
+            # Full Y: ...     + [n1] + [n2] + [n3] ... + [nk]
+
+            x = torch.tensor(seq + chain_rest[:-1], dtype=torch.long)
+
+            # Construct Y by shifting X left and appending last target
+            # But 'seq' part of Y is just shifting seq.
+            # The prediction starts after [Q] [n1].
+
+            # Let's just construct the full sequence and shift.
+            full_seq = seq + chain_rest
+
+            x_t = torch.tensor(full_seq[:-1], dtype=torch.long)
+            y_t = torch.tensor(full_seq[1:], dtype=torch.long)
+
+            mask = torch.zeros_like(y_t, dtype=torch.float)
+
+            # Mask the chain prediction part
+            # The chain part starts after `len(seq)`.
+            # `seq` ends with [Q] [n1].
+            # So `len(seq)` is index of first prediction [n2] in y_t?
+            # len(seq) in full_seq is the index of [n2].
+            # y_t has length len(full_seq) - 1.
+            # y_t[i] corresponds to prediction at step i.
+            # step i=len(seq)-1 is input [n1] (last of seq), target [n2].
+
+            start_pred_idx = len(seq) - 1
+            if start_pred_idx < len(mask):
+                mask[start_pred_idx:] = 1.0
+
+            self.data.append((x_t, y_t, mask))
+
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx): return self.data[idx]
+
+
 class ReverseTask(Dataset):
     """Reverse input sequence: [SEQ] [SEP] [REV_SEQ]"""
     def __init__(self, num_samples=500, seq_len=10, vocab_size=20):
@@ -263,10 +383,120 @@ class TextGenerationTask(Dataset):
         return x, y, mask
 
 
+class InductionHeadTask(Dataset):
+    """
+    Induction Head Task: Predict B given ... A B ... A.
+    Format: [SEQ] [A] [B] [SEQ] [A] -> Target [B]
+    """
+    def __init__(self, num_samples=1000, seq_len=64, vocab_size=40):
+        self.data = []
+        content_range = list(range(4, vocab_size))
+
+        for _ in range(num_samples):
+            # 1. Generate random sequence
+            seq = np.random.choice(content_range, size=seq_len, replace=True).tolist()
+
+            # 2. Pick a random pair (A, B)
+            a, b = np.random.choice(content_range, size=2, replace=False)
+
+            # 3. Insert (A, B) at a random position in the first half
+            idx_AB = np.random.randint(0, seq_len // 2)
+            seq[idx_AB] = a
+            seq[idx_AB + 1] = b
+
+            # 4. Insert A at a random position in the second half
+            idx_A_trigger = np.random.randint(seq_len // 2 + 1, seq_len - 1)
+            seq[idx_A_trigger] = a
+            # We enforce the NEXT token in input to be B so the target is B?
+            # No, we want the MODEL to predict B.
+            # The target corresponding to input at idx_A_trigger is B.
+            # So y[idx_A_trigger] = B.
+            # Which means seq[idx_A_trigger + 1] must be B.
+            seq[idx_A_trigger + 1] = b
+
+            # Recreate tensors
+            x = torch.tensor(seq[:-1], dtype=torch.long)
+            y_target = torch.tensor(seq[1:], dtype=torch.long)
+
+            # Mask: only predict B after the second A
+            mask = torch.zeros_like(y_target, dtype=torch.float)
+            mask[idx_A_trigger] = 1.0
+
+            self.data.append((x, y_target, mask))
+
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx): return self.data[idx]
+
+
+class MultiQueryAssociativeRecall(Dataset):
+    """
+    Associative Recall with multiple queries.
+    Input: [K1] [V1] [K2] [V2] ... [Q_K1] [Q_K2]
+    Target: ... [V1] [V2]
+    """
+    def __init__(self, num_samples=1000, vocab_size=40, num_pairs=8, num_queries=3):
+        self.data = []
+        TOK_KEY, TOK_VAL, TOK_QUERY = 1, 2, 3
+        content_range = list(range(4, vocab_size))
+
+        for _ in range(num_samples):
+            keys = np.random.choice(content_range, size=num_pairs, replace=False)
+            vals = np.random.choice([x for x in content_range if x not in keys], size=num_pairs, replace=False)
+
+            kv_seq = []
+            for k, v in zip(keys, vals):
+                kv_seq.extend([TOK_KEY, k, TOK_VAL, v])
+
+            # Queries
+            query_indices = np.random.choice(range(num_pairs), size=num_queries, replace=False)
+            query_keys = keys[query_indices]
+            query_vals = vals[query_indices]
+
+            base = len(kv_seq)
+            for qk, qv in zip(query_keys, query_vals):
+                kv_seq.extend([TOK_QUERY, qk, qv])
+
+            x = torch.tensor(kv_seq[:-1], dtype=torch.long)
+            y = torch.tensor(kv_seq[1:], dtype=torch.long)
+
+            mask = torch.zeros_like(y, dtype=torch.float)
+
+            # Mask the values corresponding to queries
+            # Query block: [Q, K, V]. We want to predict V given K.
+            # x indices for block i (after base):
+            # base + i*3 + 0: Q
+            # base + i*3 + 1: K -> Predict V (at y[base + i*3 + 1])
+            # base + i*3 + 2: V (not in x if last, but in y)
+
+            # x length is len(kv_seq) - 1.
+            # base is start of query part in kv_seq.
+
+            # Adjust base for x indexing (x matches kv_seq up to -1)
+            # Query part starts at 'base' index in kv_seq.
+            # So in x, it starts at 'base'.
+
+            for i in range(num_queries):
+                # We want to mask the position where input is K (so we predict V)
+                # K is at index `base + i*3 + 1` in kv_seq.
+                # So input x index is `base + i*3 + 1`.
+
+                mask_idx = base + i * 3 + 1
+                if mask_idx < len(mask):
+                    mask[mask_idx] = 1.0
+
+            self.data.append((x, y, mask))
+
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx): return self.data[idx]
+
+
 TASK_REGISTRY = {
     'copy': CopyTask,
     'reverse': ReverseTask,
     'associative_recall': AssociativeRecallDataset,
+    'induction_head': InductionHeadTask,
+    'multi_query_ar': MultiQueryAssociativeRecall,
+    'pointer_chain': PointerChainTask,
     'shift': ShiftTask,
     'sort': SortTask,
     'add': AddTask,
