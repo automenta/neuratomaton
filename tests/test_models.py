@@ -38,7 +38,8 @@ def test_ana_model_creation():
     logits, info = model(input_ids)
     
     assert logits.shape == (batch_size, seq_len, config.vocab_size)
-    assert isinstance(info, list)
+    assert isinstance(info, dict)
+    assert 'layers' in info
 
 
 def test_baseline_ssm_creation():

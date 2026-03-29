@@ -384,7 +384,7 @@ class ANAModel(nn.Module):
         pos_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, seq_len)
         pos_encoding = self.position_encoding(pos_ids)
         x = x + pos_encoding
-        info_log = []
+        info_log = {'layers': [{} for _ in range(self.config.num_layers)]}
 
         for i, layer in enumerate(self.layers):
             # 1. Controller
@@ -393,7 +393,7 @@ class ANAModel(nn.Module):
 
             if self.config.use_controller:
                 ctl = layer['controller']
-                track_outputs, g_ret, _ = ctl.forward_sequence(x, force_prob=force_prob)
+                track_outputs, g_ret, g_halt = ctl.forward_sequence(x, force_prob=force_prob)
 
             # 2. Update Tracks
             track_states = []
@@ -440,13 +440,20 @@ class ANAModel(nn.Module):
 
             x = x + layer_out # Residual
 
-            if return_info and i == 0:
-               stats = {}
-               if track_outputs is not None:
-                   stats['ga_0'] = track_outputs[0][0].mean().item()
-               if g_ret is not None:
-                   stats['ret_gate'] = torch.sigmoid(g_ret).mean().item()
-               info_log.append(stats)
+            if return_info:
+                # Capture detailed stats for visualization
+                layer_stats = info_log['layers'][i]
+
+                # mix_weights: [Batch, Seq, Tracks, 1] -> [Batch, Seq, Tracks]
+                layer_stats['mix_weights'] = mix_weights.detach().cpu().squeeze(-1)
+
+                # Retrieval gate
+                if g_ret is not None:
+                    layer_stats['ret_gate'] = torch.sigmoid(g_ret).detach().cpu() # [Batch, Seq, 1]
+
+                # Halt logits (if available)
+                if g_halt is not None:
+                    layer_stats['halt_gate'] = torch.sigmoid(g_halt).detach().cpu() # [Batch, Seq, 1]
 
         x = self.norm(x)
         logits = self.output_head(x)
@@ -466,7 +473,7 @@ class ANAModel(nn.Module):
         m_states = [None] * len(self.layers)
 
         final_layer_outputs = []
-        info_log = []
+        info_log = {'layers': [{'mix_weights': [], 'ret_gate': [], 'halt_gate': []} for _ in range(self.config.num_layers)]}
 
         for t in range(seq_len):
             xt = x[:, t, :]
@@ -581,15 +588,35 @@ class ANAModel(nn.Module):
                     if steps_taken > self.config.max_thinking_steps:
                         break
 
-                if return_info and i == 0 and t < 10:
-                   stats = {}
-                   if track_outputs is not None:
-                       stats['ga_0'] = track_outputs[0][0].mean().item()
-                   if g_ret is not None:
-                       stats['ret_gate'] = torch.sigmoid(g_ret).mean().item()
-                   info_log.append(stats)
+                if return_info:
+                    layer_stats = info_log['layers'][i]
+
+                    # Accumulate for sequence. mix_weights is [Batch, Tracks, 1]
+                    layer_stats['mix_weights'].append(mix_weights.detach().cpu())
+
+                    if g_ret is not None:
+                        layer_stats['ret_gate'].append(torch.sigmoid(g_ret).detach().cpu())
+
+                    if g_halt is not None:
+                         layer_stats['halt_gate'].append(torch.sigmoid(g_halt).detach().cpu())
 
             final_layer_outputs.append(xt)
+
+        # Post-process info_log to stack lists into tensors
+        if return_info:
+            for l_idx in range(self.config.num_layers):
+                l_stats = info_log['layers'][l_idx]
+                if l_stats['mix_weights']:
+                    # Stack -> [Batch, Seq, Tracks, 1] -> Squeeze -> [Batch, Seq, Tracks]
+                    l_stats['mix_weights'] = torch.stack(l_stats['mix_weights'], dim=1).squeeze(-1)
+
+                if l_stats['ret_gate']:
+                    # Stack -> [Batch, Seq, 1]
+                    l_stats['ret_gate'] = torch.stack(l_stats['ret_gate'], dim=1)
+
+                if l_stats['halt_gate']:
+                    # Stack -> [Batch, Seq, 1]
+                    l_stats['halt_gate'] = torch.stack(l_stats['halt_gate'], dim=1)
 
         output_seq = torch.stack(final_layer_outputs, dim=1)
         output_seq = self.norm(output_seq)

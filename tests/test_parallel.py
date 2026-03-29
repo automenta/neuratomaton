@@ -1,7 +1,7 @@
 import unittest
 import torch
 from ana.models import ANAModel, LinearRecurrentUnit
-from ana.config import ANAConfig
+from ana.models.config import ANAConfig
 
 
 class TestParallelScan(unittest.TestCase):
