@@ -390,6 +390,7 @@ class ANAModel(nn.Module):
             # 1. Controller
             track_outputs = None
             g_ret = None
+            g_halt = None
 
             if self.config.use_controller:
                 ctl = layer['controller']

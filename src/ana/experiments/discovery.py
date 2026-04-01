@@ -38,18 +38,25 @@ class DiscoveryEngine(ComparisonRunner):
     """
     def __init__(self, output_dir: str = "results/discovery"):
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = os.path.join(output_dir, self.timestamp)
+
+        # Resumable: If output_dir is passed, assume it's the target.
+        # Check if it already has a timestamp or is a study dir.
+        # The new framework passes `results/{study_name}/phase3_discovery`.
+        # We should NOT append timestamp if we want to resume.
+        self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Initialize logging
+        # Initialize logging (append mode for resumption)
         logging.basicConfig(level=logging.INFO,
                             format='%(asctime)s - %(levelname)s - %(message)s',
                             filename=os.path.join(self.output_dir, "discovery.log"),
-                            filemode='w')
+                            filemode='a') # Append mode
         self.logger = logging.getLogger("ANA_Discovery")
-        console = logging.StreamHandler()
-        console.setLevel(logging.INFO)
-        self.logger.addHandler(console)
+        # Prevent adding multiple handlers
+        if not self.logger.hasHandlers():
+            console = logging.StreamHandler()
+            console.setLevel(logging.INFO)
+            self.logger.addHandler(console)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.logger.info(f"Initialized DiscoveryEngine on {self.device}")
@@ -85,12 +92,24 @@ class DiscoveryEngine(ComparisonRunner):
         self.logger.info("--- Phase 1: Baseline Comparison ---")
         print("\n\033[1;36m[PHASE 1] Baseline Comparison (ANA vs Transformer vs LSTM)\033[0m")
 
+        # Resumption Check
+        result_file = os.path.join(self.output_dir, "baseline_results.json")
+        if os.path.exists(result_file):
+            try:
+                with open(result_file, 'r') as f:
+                    self.baseline_results = json.load(f)
+                self.logger.info("Found existing baseline results. Skipping...")
+                print("  > Found existing baseline results. Skipping.")
+                return
+            except json.JSONDecodeError:
+                self.logger.warning("Existing baseline results corrupted. Re-running.")
+
         # Tasks
         # 1. Induction (Context Learning)
         # 2. Copy (Memory Stability)
         # 3. Reasoning (Pointer Chain)
 
-        steps = 200 if quick else 1000
+        steps = 10 if quick else 1000
 
         tasks = {
             'Induction': InductionHeadTask(num_samples=2000, seq_len=64, vocab_size=40),
@@ -139,12 +158,25 @@ class DiscoveryEngine(ComparisonRunner):
                     self.save_visualization(model, dataset, "baselines", f"{task_name}_ana")
 
         self.baseline_results = results
-        with open(os.path.join(self.output_dir, "baseline_results.json"), 'w') as f:
+        with open(result_file, 'w') as f:
             json.dump(results, f, indent=2)
 
     def run_optimization(self, quick: bool = False, study_name: str = "ana_optimization"):
         self.logger.info("--- Phase 2: Hyperparameter Optimization ---")
         print("\n\033[1;36m[PHASE 2] Hyperparameter Optimization (Optuna)\033[0m")
+
+        # Resumption Check
+        result_file = os.path.join(self.output_dir, "tuning_results.json")
+        if os.path.exists(result_file):
+            try:
+                with open(result_file, 'r') as f:
+                    self.tuning_results = json.load(f)
+                    self.best_config = self.tuning_results.get('best_params')
+                self.logger.info("Found existing tuning results. Skipping...")
+                print("  > Found existing tuning results. Skipping.")
+                return
+            except json.JSONDecodeError:
+                self.logger.warning("Existing tuning results corrupted. Re-running.")
 
         if not OPTUNA_AVAILABLE:
             self.logger.warning("Optuna not installed. Skipping optimization phase.")
@@ -155,8 +187,8 @@ class DiscoveryEngine(ComparisonRunner):
         print(f"  > Dashboard Command: optuna-dashboard {self.storage_url}")
 
         # Objective: Maximize accuracy on a hard task (Multi-Query Associative Recall)
-        steps = 200 if quick else 600
-        n_trials = 5 if quick else 50 # Industrial scale implies more trials
+        steps = 10 if quick else 600
+        n_trials = 1 if quick else 50 # Industrial scale implies more trials
 
         task = MultiQueryAssociativeRecall(num_samples=1000, vocab_size=40, num_pairs=8, num_queries=3)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
@@ -241,12 +273,24 @@ class DiscoveryEngine(ComparisonRunner):
         except Exception as e:
             self.logger.warning(f"Could not calculate parameter importance: {e}")
 
-        with open(os.path.join(self.output_dir, "tuning_results.json"), 'w') as f:
+        with open(result_file, 'w') as f:
             json.dump(self.tuning_results, f, indent=2)
 
     def run_feature_attribution(self, quick: bool = False):
         self.logger.info("--- Phase 3: Feature Attribution (Ablation) ---")
         print("\n\033[1;36m[PHASE 3] Feature Attribution\033[0m")
+
+        # Resumption Check
+        result_file = os.path.join(self.output_dir, "attribution_results.json")
+        if os.path.exists(result_file):
+            try:
+                with open(result_file, 'r') as f:
+                    self.attribution_results = json.load(f)
+                self.logger.info("Found existing attribution results. Skipping...")
+                print("  > Found existing attribution results. Skipping.")
+                return
+            except json.JSONDecodeError:
+                self.logger.warning("Existing attribution results corrupted. Re-running.")
 
         # Use best config if available, else default
         base_params = self.best_config if self.best_config else {
@@ -268,7 +312,7 @@ class DiscoveryEngine(ComparisonRunner):
             c.state_dim = c.d_model # Ensure tied
             return c
 
-        steps = 200 if quick else 800
+        steps = 10 if quick else 800
         task = PointerChainTask(num_samples=1000, vocab_size=40, chain_len=5, noise_pairs=2)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
         val_loader = DataLoader(task, batch_size=16, shuffle=False)
@@ -295,7 +339,7 @@ class DiscoveryEngine(ComparisonRunner):
             print(f"  > {name}: {acc*100:.2f}%")
 
         self.attribution_results = results
-        with open(os.path.join(self.output_dir, "attribution_results.json"), 'w') as f:
+        with open(result_file, 'w') as f:
             json.dump(results, f, indent=2)
 
     def generate_scientific_report(self):
@@ -338,6 +382,8 @@ class DiscoveryEngine(ComparisonRunner):
                     f.write("- ANA matches or outperforms the Transformer baseline on all tested tasks.\n")
                 else:
                     f.write(f"- ANA outperformed the Transformer on {ana_wins}/{total_tasks} tasks.\n")
+            else:
+                 f.write("No baseline results available yet.\n")
 
             # 2. Optimization
             f.write("\n## 2. Hyperparameter Optimization\n")
@@ -362,14 +408,16 @@ class DiscoveryEngine(ComparisonRunner):
                 f.write("\n**Detailed Analysis:**\n")
                 f.write(f"To view interactive plots, run: `optuna-dashboard {self.storage_url}`\n")
 
-                trials = self.tuning_results['trials']
+                trials = self.tuning_results.get('trials', [])
                 # Just listing top 3
-                sorted_trials = sorted(trials, key=lambda x: x['value'], reverse=True)
+                # Filter out None values
+                valid_trials = [t for t in trials if t['value'] is not None]
+                sorted_trials = sorted(valid_trials, key=lambda x: x['value'], reverse=True)
                 f.write("\nTop 3 Configurations:\n")
                 for i, t in enumerate(sorted_trials[:3]):
                     f.write(f"{i+1}. Acc={t['value']:.4f}, Params={t['params']}\n")
             else:
-                f.write("Optimization was skipped or failed.\n")
+                f.write("Optimization was skipped, failed, or results not found.\n")
 
             # 3. Feature Attribution
             f.write("\n## 3. Feature Attribution (Ablation)\n")
@@ -384,6 +432,8 @@ class DiscoveryEngine(ComparisonRunner):
                 for name, acc in self.attribution_results.items():
                     drop = best_acc - acc
                     f.write(f"| {name} | {acc:.4f} | -{drop:.4f} |\n")
+            else:
+                 f.write("Ablation results not available yet.\n")
 
             f.write("\n## 4. Conclusion & Recommendations\n")
             f.write("Based on the experiments above, the following 'Recipe' is recommended for training ANA models:\n\n")

@@ -25,10 +25,33 @@ class PotentialRevealer(ComparisonRunner):
     """
     def __init__(self, output_dir: str = "results/potential"):
         super().__init__(output_dir=output_dir)
-        self.logger.info("Initialized PotentialRevealer")
+        # Assuming output_dir is passed correctly from the wrapper
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        # Logging setup already done by super or we can enhance it
+        # ComparisonRunner might set up logging, but we want to ensure append mode
+        # Re-configuring logging if needed
+        pass
+
+    def _check_and_load(self, filename: str):
+        filepath = os.path.join(self.output_dir, filename)
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                self.logger.info(f"Found existing results in {filename}. Skipping...")
+                print(f"  > Found existing results in {filename}. Skipping.")
+                return data
+            except json.JSONDecodeError:
+                self.logger.warning(f"Corrupted result file {filename}. Re-running.")
+        return None
 
     def run_induction_head_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Induction Head Capability ===")
+
+        existing = self._check_and_load("induction_results.json")
+        if existing: return existing
 
         # Configuration
         config = ANAConfig(
@@ -42,7 +65,7 @@ class PotentialRevealer(ComparisonRunner):
 
         # Task
         seq_len = 64
-        train_steps = 200 if quick else 1000
+        train_steps = 10 if quick else 1000
 
         task = InductionHeadTask(num_samples=2000, seq_len=seq_len, vocab_size=40)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
@@ -76,12 +99,15 @@ class PotentialRevealer(ComparisonRunner):
     def run_length_generalization_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Length Generalization ===")
 
+        existing = self._check_and_load("generalization_results.json")
+        if existing: return existing
+
         # Train on short, test on long.
         train_len = 64
         test_lens = [64, 128, 256]
-        if quick: test_lens = [64, 128]
+        if quick: test_lens = [64]
 
-        steps = 200 if quick else 1000
+        steps = 10 if quick else 1000
 
         # Use CopyTask for length generalization (simplest algorithmic task)
         # Note: CopyTask seq_len is length of *sequence to copy*.
@@ -128,7 +154,10 @@ class PotentialRevealer(ComparisonRunner):
     def run_multi_query_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Multi-Query Associative Recall ===")
 
-        steps = 200 if quick else 1000
+        existing = self._check_and_load("multiquery_results.json")
+        if existing: return existing
+
+        steps = 10 if quick else 1000
 
         task = MultiQueryAssociativeRecall(num_samples=2000, vocab_size=40, num_pairs=8, num_queries=3)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
@@ -157,7 +186,10 @@ class PotentialRevealer(ComparisonRunner):
     def run_reasoning_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Reasoning (Thinking Steps) ===")
 
-        steps = 200 if quick else 1000
+        existing = self._check_and_load("reasoning_results.json")
+        if existing: return existing
+
+        steps = 10 if quick else 1000
         chain_len = 5 # Hard task
 
         task = PointerChainTask(num_samples=2000, vocab_size=40, chain_len=chain_len, noise_pairs=2)
@@ -193,7 +225,10 @@ class PotentialRevealer(ComparisonRunner):
     def run_noise_robustness_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Noise Robustness ===")
 
-        steps = 200 if quick else 1000
+        existing = self._check_and_load("noise_results.json")
+        if existing: return existing
+
+        steps = 10 if quick else 1000
 
         # Train on Clean, Test on Noisy
         clean_task = CopyTask(num_samples=2000, seq_len=32, vocab_size=40)
@@ -240,13 +275,16 @@ class PotentialRevealer(ComparisonRunner):
     def run_curriculum_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Curriculum Learning ===")
 
+        existing = self._check_and_load("curriculum_results.json")
+        if existing: return existing
+
         # Goal: Train model on increasing difficulty.
         # Task: Associative Recall with increasing number of pairs.
 
         # Standard: Train directly on Hard (8 pairs).
         # Curriculum: Train on 4 pairs -> 6 pairs -> 8 pairs.
 
-        steps_per_stage = 100 if quick else 400
+        steps_per_stage = 10 if quick else 400
 
         config = ANAConfig(d_model=64, state_dim=64, num_layers=2, track_count=2, use_hololink=True, use_controller=True)
 
@@ -284,6 +322,9 @@ class PotentialRevealer(ComparisonRunner):
     def run_sensitivity_experiment(self, quick: bool = False):
         self.logger.info("=== EXPERIMENT: Hyperparameter Sensitivity ===")
 
+        existing = self._check_and_load("sensitivity_results.json")
+        if existing: return existing
+
         # Grid Search on key params
         # d_model vs track_count
 
@@ -292,10 +333,10 @@ class PotentialRevealer(ComparisonRunner):
 
         if quick:
             d_models = [32]
-            track_counts = [1, 2]
+            track_counts = [1]
 
         results = {}
-        steps = 100 if quick else 300
+        steps = 10 if quick else 300
 
         task = AssociativeRecallDataset(num_samples=1000, vocab_size=40, num_pairs=4, noise_len=16)
         train_loader = DataLoader(task, batch_size=16, shuffle=True)
